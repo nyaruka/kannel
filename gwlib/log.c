@@ -164,7 +164,7 @@ static void closelog(void)
 /*
  * List of currently open log files.
  */
-#define MAX_LOGFILES 128
+#define MAX_LOGFILES 256
 static struct {
     FILE *file;
     int minimum_output_level;
