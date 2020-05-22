@@ -378,7 +378,7 @@ static long convert_addr_from_pdu(Octstr *id, Octstr *addr, long ton, long npi, 
              *   1) assume international number has at least 7 chars
              *   2) the whole source addr consist of digits, exception '+' in front
              */
-            if (octstr_len(addr) < 7) {
+            if (octstr_len(addr) < 4) {
                 /* We consider this as a "non-hard" condition, since there "may"
                  * be international numbers routable that are < 7 digits. Think
                  * of 2 digit country code + 3 digit emergency code. */
