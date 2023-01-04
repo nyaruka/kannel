@@ -2,6 +2,7 @@
 	daily
 	missingok
 	rotate 365
+	maxsize 1G
 	compress
 	delaycompress
 	notifempty
