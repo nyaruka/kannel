@@ -273,9 +273,7 @@ typedef struct WsCompilerRec WsCompiler;
 #define YYLEX_PARAM     pctx
 
 /* The lexer. */
-struct YYSTYPE;
-struct YYLTYPE;
-extern int ws_yy_lex(YYSTYPE *yylval, YYLTYPE *yylloc, WsCompiler *compiler);
+extern int ws_yy_lex();
 
 /* Register the lexer allocated block `ptr' to the compiler's list of
    active blocks. */
