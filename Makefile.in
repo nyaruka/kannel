@@ -154,7 +154,7 @@ pres = $(srcs:.c=.i)
 
 libs = libgw.a libwmlscript.a libwap.a libgwlib.a
 
-srcdirs = gw gw/smsc gwlib test wmlscript checks wap radius
+srcdirs = gw gw/smsc gwlib test checks wap radius
 
 man1pages = wmlscript/wmlsc.1 wmlscript/wmlsdasm.1
 man8pages = gw/kannel.8
