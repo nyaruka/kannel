@@ -54,7 +54,7 @@
 	</author>
 	<author>
 		<firstname>Aarno</firstname>
-		<surname>Syv&auml;nen</surname>
+		<surname>Syv&#228;nen</surname>
 		<affiliation>
 			<jobtitle>Chief MMS Developer</jobtitle>
 			<orgname>Global Networks Inc.</orgname>
@@ -2969,6 +2969,21 @@ secret-nas = radius
 			to smsc-id B would look like: "A,111,222; B,333,444".
      </entry></row>
 
+    <row><entry><literal>reroute-receiver-regex</literal></entry>
+      <entry><literal>string</literal></entry>
+      <entry valign="bottom">
+            Similar to 'reroute-receiver'. Defines the explicit smsc-id routes 
+            for specific receiver number regex patterns of messages that are coming from 
+            this smsc connection.
+            Format is that first comes the smsc-id to route the message to, then 
+            all receiver numbers as regular expressions that should be routed, 
+            separated with comma (','). 
+            For example, route receivers that start with 1 and 2 to smsc-id A and 
+            those that start with 3 and 4 to smsc-id B would look like: 
+            "A,^1.*,^2.*; B,^3.*,^4.*". (Please ensure the reserved characters ';' and ','
+            are not used in the regular expression to avoid parsing errors).
+     </entry></row>
+
     <row><entry><literal>reroute-dlr</literal></entry>
       <entry><literal>boolean</literal></entry>
       <entry valign="bottom">
@@ -3720,6 +3735,14 @@ address-range = ""
 			the SMPP PDU, @ replaced with ?). If set to another value,
             <literal>iconv()</literal> is used.
             (Defaults to windows-1252)
+        </entry></row>
+
+     <row><entry><literal>retry</literal></entry>
+        <entry><literal>boolean</literal></entry>
+        <entry valign="bottom">
+            Defines if SMSC should retry to connect even if SMSC sent error that
+            username or password is incorrect.
+            (Defaults to false)
         </entry></row>
 
     <row><entry><literal>connection-timeout</literal></entry>
@@ -4516,7 +4539,7 @@ smsc-password = foobar
      </entry></row>
 
    <row><entry><literal>window</literal></entry>
-   <entry><literal>boolean</literal></entry>
+   <entry><literal>integer</literal></entry>
    <entry valign="bottom">
       Number of concurrent sending threads. If not set,
       one thread is used.
@@ -4671,6 +4694,27 @@ send-url = "http://localhost:20022"
        requests. As a guideline it is recommended that no more than
        10 (default) requests are outstanding at any time.
     </entry></row>
+
+   <row><entry><literal>system-id</literal></entry>
+   <entry><literal>string</literal></entry>
+   <entry valign="bottom">
+      Clickatell only: API id.
+   </entry></row>
+
+   <row><entry><literal>mobile-originated</literal></entry>
+   <entry><literal>integer</literal></entry>
+   <entry valign="bottom">
+      Clickatell only: 'mo' parameter used for a two-way service (0 or 1).
+   </entry></row>
+
+   <row><entry><literal>use-post</literal></entry>
+     <entry><literal>boolean</literal></entry>
+     <entry valign="bottom">
+       Generic only: Defines if a HTTP POST method with a content-type
+       <literal>application/x-www-form-urlencoded</literal> should
+       be used rather then the HTTP GET method. If set, both 
+       directions will use the HTTP POST method. (Default: no)
+   </entry></row>
    </tbody></tgroup></informaltable>
 
 <sect3>
@@ -5436,7 +5480,7 @@ marked as "not tested" because the table is still new.</para>
    </row>
 
    <row>
-    <entry spanname="feature">Correctly encodes <literal>&auml;</literal> when sending</entry>
+    <entry spanname="feature">Correctly encodes <literal>&#228;</literal> when sending</entry>
    </row>
    <row>
     <entry></entry>
@@ -5493,7 +5537,7 @@ marked as "not tested" because the table is still new.</para>
    </row>
 
    <row>
-    <entry spanname="feature">Can receive <literal>&auml;</literal> in text messages</entry>
+    <entry spanname="feature">Can receive <literal>&#228;</literal> in text messages</entry>
    </row>
    <row>
     <entry></entry>
@@ -6406,7 +6450,7 @@ ssl-certkey-file
         meaning: it is used to separate multiple phone numbers from
         each other in multi-send. To disable this feature, do not have
         it as an accepted character. If this variable is
-        not set, the default set <literal>"0123456789&nbsp;+-"</literal> is used.
+        not set, the default set <literal>"0123456789&#160;+-"</literal> is used.
      </entry></row>
 
     <row><entry><literal>global-sender</literal></entry>
@@ -6650,6 +6694,23 @@ shortcode = "1111;2222"
 	to the via the id "mysmsc" to bearerbox.
 	</para>
 
+  <para>To define a default smsbox-route when no other conditions match, you may
+  defined a group without smsc-id and shortcode vaues, like this:
+
+<programlisting>
+group = smsbox
+...
+smsbox-id = mysmsc
+...
+
+group = smsbox-route
+smsbox-id = mysmsc
+</programlisting>
+
+  If no such default smsbox-route is defined, then bearerbox will deliver to any
+  un-identified smsbox connection.  
+  </para>
+  
    <para>smsbox-route inherits from core the following fields:
    </para>
 
@@ -7308,6 +7369,10 @@ mwi (message waiting indicator) bits of DCS:
 and 4, 5, 6, 7 for deactivation respectively.
 </entry></row>
 
+<row><entry><literal>%y</literal></entry><entry>
+message priority: 0 (lowest) to 3 (highest).
+</entry></row>
+
 <row><entry><literal>%C</literal></entry><entry>
 message charset: for a "normal" message, it will 
 be "GSM" (coding=0), "binary" (coding=1) or 
@@ -7316,7 +7381,12 @@ recoded from Unicode, it will be "WINDOWS-1252"
 </entry></row>
 
 <row><entry><literal>%u</literal></entry><entry>
-<literal>udh</literal> of incoming message
+<literal>udh</literal> of incoming message (URL-encoded)
+</entry></row>
+
+<row><entry><literal>%U</literal></entry><entry>
+<literal>udh</literal> of incoming message (printable hexadecimal byte codes). 
+I.e. "xyz" would be send as byte codes "78797A".
 </entry></row>
 
 <row><entry><literal>%B</literal></entry><entry>
@@ -7351,8 +7421,7 @@ set this field so it will be empty.
 
 <row><entry><literal>%x</literal></entry><entry>
 the smsbox-id of the message, identifying from which smsbox connection
-the message is originating. (Only available withing the
-<literal>access-log-format</literal> directive)
+the message is originating.
 </entry></row>
 
 <row><entry><literal>%v</literal></entry><entry>
@@ -7807,6 +7876,18 @@ text = "No action specified"
         this one. No idea to use with forced-smsc.
      </entry></row>
 
+   <row><entry><literal>forced-priority</literal></entry>
+     <entry>number</entry>
+     <entry valign="bottom">
+         Force priority of any message send by this user, in the range (0..3).
+     </entry></row>
+
+   <row><entry><literal>max-priority</literal></entry>
+     <entry>number</entry>
+     <entry valign="bottom">
+         Maximum allowed priority for any message send by this user, in the
+         range (0..3).
+     </entry></row>
 
    <row><entry><literal>default-sender</literal></entry>
      <entry>phone-number</entry>
@@ -7880,8 +7961,18 @@ text = "No action specified"
     <row><entry><literal>dlr-url</literal></entry>
      <entry>URL</entry>
      <entry valign="bottom">
-	URL to be fetched if a <literal>dlr-mask</literal> CGI 
-	parameter is present.
+       Optional. Defines a default URL which is fetched for DLR event, if no 
+       specific <literal>dlr-url</literal> CGI parameter is set in the HTTP
+       request.
+     </entry></row>
+
+    <row><entry><literal>dlr-mask</literal></entry>
+     <entry>number (bit mask)</entry>
+     <entry valign="bottom">
+       Optional. Defines a default DLR event bit mask which is used in 
+       combination with the <literal>dlr-url</literal> config directive, 
+       if no specific <literal>dlr-url</literal> CGI parameter is set in the
+       HTTP request.
      </entry></row>
 
      <row><entry><literal>allowed-prefix-regex</literal></entry>
@@ -10843,7 +10934,7 @@ values:
               create 640 kannel adm
               sharedscripts
               postrotate
-                    killall -USR2 bearerbox && killall -HUP smsbox wapbox || true > /dev/null 2> /dev/null
+                    killall -USR2 bearerbox &amp;&amp; killall -HUP smsbox wapbox || true &gt; /dev/null 2&gt; /dev/null
               endscript
         }
         </userinput></screen>

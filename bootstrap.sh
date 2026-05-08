@@ -25,5 +25,5 @@ fi
 #
 aclocal
 autoheader
-automake --add-missing --copy --gnu
 autoconf
+automake --add-missing --copy --gnu

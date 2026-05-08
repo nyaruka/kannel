@@ -75,7 +75,7 @@
 /* Maximum number of live threads we can support at once.  Increasing
  * this will increase the size of the threadtable.  Use powers of two
  * for efficiency. */
-#define THREADTABLE_SIZE 1024
+#define THREADTABLE_SIZE 4096
 
 struct threadinfo
 {
@@ -473,7 +473,7 @@ static long spawn_thread(gwthread_func_t *func, const char *name, void *arg)
 
     if (active_threads >= THREADTABLE_SIZE) {
         unlock();
-        warning(0, "Too many threads, could not create new thread.");
+        error(0, "Too many threads, could not create new thread.");
         gw_free(p->ti);
         gw_free(p);
         return -1;

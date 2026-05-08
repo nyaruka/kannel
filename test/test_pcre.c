@@ -65,7 +65,7 @@
 #include <signal.h>
 
 #include "gwlib/gwlib.h"
-#include "gwlib/pcre.h"
+#include "gwlib/gw-pcre.h"
 
 #ifdef HAVE_PCRE
 
@@ -117,4 +117,9 @@ int main(int argc, char **argv)
     return 0;
 }
 
+#else
+int main(int argc, char **argv)
+{
+    return 1;
+}
 #endif

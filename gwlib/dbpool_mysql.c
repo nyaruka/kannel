@@ -68,6 +68,13 @@
 #include <mysqld_error.h>
 
 
+/* define my_bool for newer versions because they use the bool or int C type instead */
+#if MYSQL_VERSION_ID >= 80000 && !defined(MARIADB_BASE_VERSION)
+typedef bool my_bool;
+#endif
+
+
+
 /*
  * Handle temporary error codes, that will cause
  * mysql_stmt_execute() to be retried.

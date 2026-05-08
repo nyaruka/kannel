@@ -142,7 +142,7 @@
 
 #include <signal.h>
 #include "gwlib/gwlib.h"
-#include "gwlib/regex.h"
+#include "gwlib/gw-regex.h"
 #include "smscconn.h"
 #include "load.h"
 
@@ -205,6 +205,7 @@ struct smscconn {
     /* Stores rerouting information for this specific smsc-id */
     int reroute;                /* simply turn MO into MT and process internally */
     Dict *reroute_by_receiver;  /* reroute receiver numbers to specific smsc-ids */
+    List *reroute_by_receiver_regex; /* same as above, but with regex patterns */
     Octstr *reroute_to_smsc;    /* define a smsc-id to reroute to */
     int reroute_dlr;            /* should DLR's are rereouted too? */
     int dead_start;             /* don't connect this SMSC at startup time */
@@ -248,6 +249,13 @@ struct smscconn {
 
     void *data;			/* SMSC specific stuff */
 };
+
+
+typedef struct pattern_route {
+    regex_t *re;
+    Octstr *id;
+} pattern_route;
+
 
 /*
  * Initializers for various SMSC connection implementations,

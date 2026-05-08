@@ -87,8 +87,9 @@ Usage: fakesmsc [-H host] [-r port] [-i interval] [-m max] [-z <type>] <msg> ...
 \n\
 msg format: \"sender receiver type(text|data|ucs2|udh-data|udh-text|route|dlr-mask) [udhdata|route|dlrmask] msgdata\"\n\
 \n\
-Type \"text\" means plaintext msgdata, \"data\" urlcoded, \"udh\" url-encoded udh+msg,\n\
-\"ucs2\" unicode url-encoded msgdata and \"route\" means smsbox-id routed plaintext msgdata\n\
+Type \"text\" means plaintext msgdata, \"data\" url-encoded, \"udh\" url-encoded udh+msg,\n\
+\"utf8\" utf-8 url-encoded msgdata, \"ucs2\" unicode url-encoded msgdata \n\
+and \"route\" means smsbox-id routed plaintext msgdata\n\
 Examples: \n\
 \n\
 fakesmsc -m 1 \"123 345 udh %04udh%3f message+data+here\"\n\

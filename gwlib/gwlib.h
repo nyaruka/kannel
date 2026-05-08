@@ -97,12 +97,13 @@
 #include "protected.h"
 #include "accesslog.h"
 #include "dict.h"
-#include "semaphore.h"
+#include "gw-semaphore.h"
 #include "xmlrpc.h"
 #include "md5.h"
 #include "gw_uuid.h"
 #include "gw-rwlock.h"
 #include "gw-prioqueue.h"
+#include "gw-dlopen.h"
 
 void gwlib_assert_init(void);
 void gwlib_init(void);

@@ -92,6 +92,10 @@ int meta_data_set_value(Octstr *data, const char *group, const Octstr *key, cons
  */
 Octstr *meta_data_get_value(Octstr *data, const char *group, const Octstr *key);
 /**
+ * Remove value for a given group and key.
+ */
+int meta_data_remove_value(Octstr *data, const char *group, const Octstr *key);
+/**
  * Merge two meta data strings into one
  */
 Octstr *meta_data_merge(const Octstr *data, const Octstr *new_data, int replace);

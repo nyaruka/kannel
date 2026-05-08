@@ -140,6 +140,7 @@ long date_convert_universal(struct universaltime *t)
     date += t->hour * HOUR;
     date += t->minute * MINUTE;
     date += t->second;
+    date -= t->offset_sec;
 
     return date;
 }
@@ -217,6 +218,8 @@ long date_parse_http(Octstr *date)
         goto error;
 
     octstr_destroy(monthstr);
+    /* GTM time means offset 0 */
+    t.offset_sec = 0;
     return date_convert_universal(&t);
 
 error:
@@ -235,6 +238,7 @@ int date_parse_iso (struct universaltime *ut, Octstr *os)
     ut->hour = 0;
     ut->minute = 0;
     ut->second = 0;
+    ut->offset_sec = 0;
 
     p = octstr_get_cstr(os);
     q = p + ((n = octstr_search_char(os, 'T', 0)) >= 0 ? n : octstr_len(os)); /* stop at the end of string or at the time separator */
@@ -245,46 +249,78 @@ int date_parse_iso (struct universaltime *ut, Octstr *os)
     if (ut->year < 70)
         ut->year += 2000;
     else if (ut->year < 100)
-	ut->year += 1900;
+        ut->year += 1900;
      
     while (p < q && !gw_isdigit(*p))
-	p++;     
+        p++;
     if (sscanf(p, "%2ld%n", &ut->month, &n) < 1)
-	return 0;
+        return 0;
     p += n;
      
      /* 0-based months */
     if (ut->month > 0)
-	ut->month--;
+        ut->month--;
      
     while (p < q && !gw_isdigit(*p))
-        p++;     
+        p++;
     if (sscanf(p, "%2ld%n", &ut->day, &n) < 1)
-	return 0;
+        return 0;
     p += n;
 
     if (*q == 'T') 
-	p = q+1;
+        p = q+1;
     else
         return 0;
 
     while (*p && !gw_isdigit(*p))
-	p++;     
+        p++;
     if (sscanf(p, "%2ld%n", &ut->hour, &n) < 1)
-	return 0;
+        return 0;
     p += n;
 
     while (*p && !gw_isdigit(*p))
-	p++;     
+        p++;
     if (sscanf(p, "%2ld%n", &ut->minute, &n) < 1)
-	return 0;
+        return 0;
     p += n;
      
     while (*p && !gw_isdigit(*p))
-	p++;     
+        p++;
     if (sscanf(p, "%2ld%n", &ut->second, &n) < 1)
-	return 0;
-     p += n;
+        return 0;
+    p += n;
+
+    if (*p == '.') {
+        long fract;
+        /* fraction */
+        p++;
+        if (sscanf(p, "%ld%n", &fract, &n) < 1)
+            return 0;
+        p += n;
+    }
+
+    /* check timezone */
+    if (*p) {
+        long hh = 0, mi = 0;
+        char plus = *p;
+        p++;
+
+        if (plus == 'Z')
+            return 0; /* we are done */
+
+        if (sscanf(p, "%2ld%n", &hh, &n) < 1)
+            return -1;
+        p += n;
+
+        while (*p && !gw_isdigit(*p))
+            p++;
+        if (sscanf(p, "%2ld%n", &mi, &n) > 1)
+            p += n;
+
+        ut->offset_sec = hh * HOUR + mi * MINUTE;
+        if (plus == '-')
+            ut->offset_sec = -ut->offset_sec;
+    }
 
     return 0;
 }

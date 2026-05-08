@@ -62,6 +62,16 @@
  */
 
 #include "gwlib/gwlib.h"
+#include "smscconn.h"
+#include "smscconn_p.h"
+#include "bb_smscconn_cb.h"
+#include "msg.h"
+#include "sms.h"
+#include "dlr.h"
+#include "urltrans.h"
+#include "meta_data.h"
+
+#include "../smsc_http_p.h"
 
 
 /* MT related function */
@@ -73,9 +83,21 @@ static int clickatell_send_sms(SMSCConn *conn, Msg *sms)
     List *headers;
 
     /* form the basic URL */
-    url = octstr_format("%S/sendmsg?to=%E&from=%E&api_id=%E&user=%E&password=%E",
-        conndata->send_url, sms->sms.receiver, sms->sms.sender,
+    url = octstr_format("%S/sendmsg?to=%E&api_id=%E&user=%E&password=%E",
+        conndata->send_url, sms->sms.receiver,
         conndata->system_id, conndata->username, conndata->password);
+
+    /* append 'from' parameter */
+    if (!conndata->no_sender)
+        octstr_format_append(url, "&from=%E", sms->sms.sender);
+
+    /* append 'mo' parameter */
+    if (conndata->mobile_originated)
+        octstr_append_cstr(url, "&mo=1");
+
+    /* append 'validity' parameter */
+    if (sms->sms.validity != SMS_PARAM_UNDEFINED)
+        octstr_format_append(url, "&validity=%ld", (sms->sms.validity - time(NULL)) / 60);
 
     /* append MD5 digest as msg ID from our UUID */
     uuid_unparse(sms->sms.id, id);
@@ -84,9 +106,9 @@ static int clickatell_send_sms(SMSCConn *conn, Msg *sms)
     octstr_format_append(url, "&cliMsgId=%E", os);
     octstr_destroy(os);
 
-    /* add UDH header */
+    /* append UDH header */
     if(octstr_len(sms->sms.udhdata)) {
-    octstr_format_append(url, "&udh=%H", sms->sms.udhdata);
+        octstr_format_append(url, "&udh=%H", sms->sms.udhdata);
     }
 
     if(sms->sms.coding == DC_8BIT) {
@@ -102,8 +124,17 @@ static int clickatell_send_sms(SMSCConn *conn, Msg *sms)
         }
     }
 
-    if (DLR_IS_ENABLED_DEVICE(sms->sms.dlr_mask))
-    octstr_format_append(url, "&callback=3&deliv_ack=1");
+    /* append 'callback' parameter */
+    if (DLR_IS_ENABLED_DEVICE(sms->sms.dlr_mask)) {
+        int callback = 0;
+        if (sms->sms.dlr_mask & DLR_BUFFERED)
+            callback |= 0x01;
+        if (sms->sms.dlr_mask & (DLR_SUCCESS | DLR_EXPIRED))
+            callback |= 0x02;
+        if (sms->sms.dlr_mask & DLR_FAIL)
+            callback |= 0x04;
+        octstr_format_append(url, "&callback=%d", callback);
+    }
 
     headers = http_create_empty_headers();
     debug("smsc.http.clickatell", 0, "HTTP[%s]: Sending request <%s>",
@@ -217,56 +248,62 @@ static void clickatell_receive_sms(SMSCConn *conn, HTTPClient *client,
           octstr_get_cstr(conn->id));
 
     if (api_id != NULL && from != NULL && to != NULL && timestamp != NULL && text != NULL && charset != NULL && udh != NULL) {
-    /* we received an MO message */
-    debug("smsc.http.clickatell", 0, "HTTP[%s]: Received MO message from %s: <%s>",
-            octstr_get_cstr(conn->id), octstr_get_cstr(from), octstr_get_cstr(text));
-    momsg = msg_create(sms);
-    momsg->sms.sms_type = mo;
-    momsg->sms.sender = octstr_duplicate(from);
-    momsg->sms.receiver = octstr_duplicate(to);
-    momsg->sms.msgdata = octstr_duplicate(text);
-    momsg->sms.charset = octstr_duplicate(charset);
-    momsg->sms.service = octstr_duplicate(api_id);
-    momsg->sms.binfo = octstr_duplicate(api_id);
-        momsg->sms.smsc_id = octstr_duplicate(conn->id);
-    if (octstr_len(udh) > 0) {
-        momsg->sms.udhdata = octstr_duplicate(udh);
-    }
+        /* we received an MO message */
+        debug("smsc.http.clickatell", 0, "HTTP[%s]: Received MO message from %s: <%s>",
+                octstr_get_cstr(conn->id), octstr_get_cstr(from), octstr_get_cstr(text));
+        momsg = msg_create(sms);
+        momsg->sms.sms_type = mo;
+        momsg->sms.sender = octstr_duplicate(from);
+        momsg->sms.receiver = octstr_duplicate(to);
+        momsg->sms.msgdata = octstr_duplicate(text);
+        momsg->sms.charset = octstr_duplicate(charset);
+        momsg->sms.service = octstr_duplicate(api_id);
+        momsg->sms.binfo = octstr_duplicate(api_id);
+            momsg->sms.smsc_id = octstr_duplicate(conn->id);
+        if (octstr_len(udh) > 0) {
+            momsg->sms.udhdata = octstr_duplicate(udh);
+        }
         strptime(octstr_get_cstr(timestamp), "%Y-%m-%d %H:%M:%S", &tm);
         momsg->sms.time = gw_mktime(&tm);
 
-    /* note: implicit msg_destroy */
-    ret = bb_smscconn_receive(conn, momsg);
+        /* note: implicit msg_destroy */
+        ret = bb_smscconn_receive(conn, momsg);
         httpstatus = HTTP_OK;
-    retmsg = octstr_create("Thanks");
+        retmsg = octstr_create("Thanks");
     } else if (apimsgid == NULL || status == NULL || timestamp == NULL || dest == NULL) {
         error(0, "HTTP[%s]: Insufficient args.",
               octstr_get_cstr(conn->id));
         httpstatus = HTTP_OK;
         retmsg = octstr_create("Insufficient arguments, rejected.");
     } else {
-    switch (atoi(octstr_get_cstr(status))) {
-    case  1: /* message unknown */
-    case  5: /* error with message */
-    case  6: /* user cancelled message */
-    case  7: /* error delivering message */
-    case  9: /* routing error */
-    case 10: /* message expired */
-        dlrstat = 2; /* delivery failure */
-        break;
-    case  2: /* message queued */
-    case  3: /* delivered */
-    case 11: /* message queued for later delivery */
-        dlrstat = 4; /* message buffered */
-        break;
-    case  4: /* received by recipient */
-    case  8: /* OK */
-        dlrstat = 1; /* message received */
-        break;
-    default: /* unknown status code */
-        dlrstat = 16; /* smsc reject */
-        break;
-    }
+        /* we received a DLR */
+        switch (atoi(octstr_get_cstr(status))) {
+            case  1: /* message unknown */
+            case  5: /* error with message */
+            case  6: /* user cancelled message */
+            case  7: /* error delivering message */
+            case  9: /* routing error */
+            case 12: /* out of credit */
+            case 13: /* message cancelled by Clickatell */
+            case 14: /* maximum MT limit exceeded */
+                dlrstat = DLR_FAIL; /* delivery failure */
+                break;
+            case 10: /* message expired */
+                dlrstat = DLR_EXPIRED;
+                break;
+            case  2: /* message queued */
+            case  3: /* delivered to gateway */
+            case 11: /* message queued for later delivery */
+                dlrstat = DLR_BUFFERED; /* message buffered */
+                break;
+            case  4: /* received by recipient */
+            case  8: /* OK */
+                dlrstat = DLR_SUCCESS; /* message received */
+                break;
+            default: /* unknown status code */
+                dlrstat = DLR_UNKNOWN;
+                break;
+        }
         dlrmsg = dlr_find(conn->id,
             apimsgid, /* smsc message id */
             dest, /* destination */
@@ -275,12 +312,12 @@ static void clickatell_receive_sms(SMSCConn *conn, HTTPClient *client,
         if (dlrmsg != NULL) {
             /* dlrmsg->sms.msgdata = octstr_duplicate(apimsgid); */
             dlrmsg->sms.sms_type = report_mo;
-        dlrmsg->sms.time = atoi(octstr_get_cstr(timestamp));
-        if (charge) {
-        /* unsure if smsbox relays the binfo field to dlrs.
-           But it is here in case they will start to do it. */
-        dlrmsg->sms.binfo = octstr_duplicate(charge);
-        }
+            dlrmsg->sms.time = atoi(octstr_get_cstr(timestamp));
+            if (charge) {
+                /* unsure if smsbox relays the binfo field to dlrs.
+                   But it is here in case they will start to do it. */
+                dlrmsg->sms.binfo = octstr_duplicate(charge);
+            }
 
             ret = bb_smscconn_receive(conn, dlrmsg);
             httpstatus = (ret == 0 ? HTTP_OK : HTTP_FORBIDDEN);
@@ -306,8 +343,8 @@ static void clickatell_receive_sms(SMSCConn *conn, HTTPClient *client,
 }
 
 struct smsc_http_fn_callbacks smsc_http_clickatell_callback = {
-        .send_sms = clickatell_send_sms,
-        .parse_reply = clickatell_parse_reply,
-        .receive_sms = clickatell_receive_sms,
+    .send_sms = clickatell_send_sms,
+    .parse_reply = clickatell_parse_reply,
+    .receive_sms = clickatell_receive_sms,
 };
 

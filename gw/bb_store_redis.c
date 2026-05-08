@@ -181,7 +181,7 @@ static long store_redis_messages()
 }
 
 
-static void redis_update(const Octstr *cmd, List *binds)
+static int redis_update(const Octstr *cmd, List *binds)
 {
     int	res;
     DBPoolConn *pc;
@@ -193,7 +193,7 @@ static void redis_update(const Octstr *cmd, List *binds)
     pc = dbpool_conn_consume(pool);
     if (pc == NULL) {
         error(0, "Database pool got no connection! Redis update failed!");
-        return;
+        return 0;
     }
 
 	res = dbpool_conn_update(pc, cmd, binds);
@@ -204,20 +204,25 @@ static void redis_update(const Octstr *cmd, List *binds)
     }
 
     dbpool_conn_produce(pc);
+
+    return res;
 }
 
 
-static void store_redis_add(Octstr *id, Octstr *os)
+static int store_redis_add(Octstr *id, Octstr *os)
 {
     Octstr *cmd;
+    int rc;
 
     octstr_binary_to_base64(os);
-    cmd = octstr_format("HSET %s %s %s",
+    cmd = octstr_format("HSETNX %s %s %s",
                         octstr_get_cstr(fields->table),
                         octstr_get_cstr(id), octstr_get_cstr(os));
-    redis_update(cmd, NULL);
+    rc = redis_update(cmd, NULL);
 
     octstr_destroy(cmd);
+    
+    return rc == 1 ? 0 : -1;
 }
 
 
@@ -253,11 +258,12 @@ static void store_redis_add_hash(Octstr *id, Dict *hash)
  * module and b) safe space in the redis-server memory, we will only store
  * values that are set.
  */
-static void store_redis_add_msg(Octstr *id, Msg *msg)
+static int store_redis_add_msg(Octstr *id, Msg *msg)
 {
     List *b;
     Octstr *cmd;
     char uuid[UUID_STR_LEN + 1];
+    int rc;
 
     cmd = octstr_create("");
     b = gwlist_create();
@@ -290,34 +296,42 @@ static void store_redis_add_msg(Octstr *id, Msg *msg)
         break;
     }
 
-    redis_update(cmd, b);
+    rc = redis_update(cmd, b);
 
     gwlist_destroy(b, octstr_destroy_item);
     octstr_destroy(cmd);
+
+    return rc == 0 ? 0 : -1;
 }
 
 
-static void store_redis_delete(Octstr *id)
+static int store_redis_delete(Octstr *id)
 {
 	Octstr *cmd;
+	int rc;
 
 	cmd = octstr_format("HDEL %s %s",
                         octstr_get_cstr(fields->table),
                         octstr_get_cstr(id));
-    redis_update(cmd, NULL);
+    rc = redis_update(cmd, NULL);
 
     octstr_destroy(cmd);
+    
+    return rc == 1 ? 0 : -1;
 }
 
 
-static void store_redis_delete_hash(Octstr *id)
+static int store_redis_delete_hash(Octstr *id)
 {
     Octstr *cmd;
+    int rc;
 
     cmd = octstr_format("DEL %s", octstr_get_cstr(id));
-    redis_update(cmd, NULL);
+    rc = redis_update(cmd, NULL);
 
     octstr_destroy(cmd);
+
+    return rc == 1 ? 0 : -1;
 }
 
 
@@ -414,12 +428,7 @@ static int store_redis_getall_hash(int ignore_err, void(*cb)(Dict*, void*), void
     Octstr *os, *key, *id;
     List *result, *row, *result_key, *row_key;
     Dict *hash;
-
-    cmd = octstr_create("KEYS *");
-
-#if defined(REDIS_TRACE)
-    debug("store.redis", 0, "redis cmd: %s", octstr_get_cstr(cmd));
-#endif
+    long cursor = 0;
 
     pc = dbpool_conn_consume(pool);
     if (pc == NULL) {
@@ -427,51 +436,80 @@ static int store_redis_getall_hash(int ignore_err, void(*cb)(Dict*, void*), void
         dbpool_conn_produce(pc);
         return -1;
     }
-    if (dbpool_conn_select(pc, cmd, NULL, &result) != 0) {
-        error(0, "Failed to fetch messages from redis with cmd `%s'",
-              octstr_get_cstr(cmd));
-        octstr_destroy(cmd);
-        dbpool_conn_produce(pc);
-        return -1;
-    }
-    octstr_destroy(cmd);
 
-    if (gwlist_len(result) == 1 && ((row = gwlist_extract_first(result)) != NULL)) {
-        while ((id = gwlist_extract_first(row)) != NULL) {
-             cmd = octstr_format("HGETALL %s", octstr_get_cstr(id));
-             if (dbpool_conn_select(pc, cmd, NULL, &result_key) != 0) {
-                 error(0, "Failed to fetch messages from redis with cmd `%s'",
-                         octstr_get_cstr(cmd));
-                 octstr_destroy(cmd);
+    do {
+        result = NULL;
+        cmd = octstr_format("SCAN %ld", cursor);
+
+#if defined(REDIS_TRACE)
+        debug("store.redis", 0, "redis cmd: %s", octstr_get_cstr(cmd));
+#endif
+
+        if (dbpool_conn_select(pc, cmd, NULL, &result) != 0) {
+            error(0, "Failed to fetch messages from redis with cmd `%s'", octstr_get_cstr(cmd));
+            octstr_destroy(cmd);
+            dbpool_conn_produce(pc);
+            return -1;
+        }
+        octstr_destroy(cmd);
+
+        if (gwlist_len(result) == 1 && ((row = gwlist_extract_first(result)) != NULL)) {
+            /* first entry is the next cursor */
+            if ((id = gwlist_extract_first(row)) == NULL || octstr_parse_long(&cursor, id, 0, 10) == -1) {
+                 error(0, "Failed to parse next cursor from redis `%s'", octstr_get_cstr(id));
                  dbpool_conn_produce(pc);
                  octstr_destroy(id);
-                 gwlist_destroy(result, octstr_destroy_item);
-                 return -1;
-             }
-             octstr_destroy(cmd);
-
-             if (gwlist_len(result_key) == 1 && ((row_key = gwlist_extract_first(result_key)) != NULL)) {
-                 hash = dict_create(32, octstr_destroy_item);
-                 while (gwlist_len(row_key) > 0) {
-                     key = gwlist_extract_first(row_key);
-                     os = gwlist_extract_first(row_key);
-                     if (key && os) {
-                         dict_put(hash, key, os);
-                     }
-                     octstr_destroy(key);
-                 }
-                 cb(hash, data);
-                 dict_destroy(hash);
+                 /* second element is array of keys */
+                 row_key = gwlist_extract_first(row);
                  gwlist_destroy(row_key, octstr_destroy_item);
-             }
-             gwlist_destroy(result_key, NULL);
-         }
-         gwlist_destroy(row, octstr_destroy_item);
-    } else {
-        debug("store.redis", 0, "No messages loaded from redis store");
-    }
+                 gwlist_destroy(row, NULL);
+                 gwlist_destroy(result, NULL);
+                 return -1;
+            }
+            /* second element is array of keys */
+            octstr_destroy(id);
+            row_key = gwlist_extract_first(row);
+            gwlist_destroy(row, NULL);
+            row = row_key; row_key = NULL;
+
+            /* loop via keys */
+            while ((id = gwlist_extract_first(row)) != NULL) {
+                cmd = octstr_format("HGETALL %s", octstr_get_cstr(id));
+                if (dbpool_conn_select(pc, cmd, NULL, &result_key) != 0) {
+                    error(0, "Failed to fetch messages from redis with cmd `%s'", octstr_get_cstr(cmd));
+                    dbpool_conn_produce(pc);
+                    octstr_destroy(cmd);
+                    octstr_destroy(id);
+                    gwlist_destroy(row, octstr_destroy_item);
+                    return -1;
+                }
+                octstr_destroy(cmd);
+                octstr_destroy(id);
+
+                if (gwlist_len(result_key) == 1 && ((row_key = gwlist_extract_first(result_key)) != NULL)) {
+                    hash = dict_create(32, octstr_destroy_item);
+                    while (gwlist_len(row_key) > 0) {
+                        key = gwlist_extract_first(row_key);
+                        os = gwlist_extract_first(row_key);
+                        if (key && os) {
+                            dict_put(hash, key, os);
+                        }
+                        octstr_destroy(key);
+                    }
+                    cb(hash, data);
+                    dict_destroy(hash);
+                    gwlist_destroy(row_key, octstr_destroy_item);
+                }
+                gwlist_destroy(result_key, NULL);
+            }
+            gwlist_destroy(row, octstr_destroy_item);
+        } else {
+            debug("store.redis", 0, "No messages loaded from redis store");
+        }
+        gwlist_destroy(result, NULL);
+    } while (cursor > 0);
+
     dbpool_conn_produce(pc);
-    gwlist_destroy(result, NULL);
 
     return 0;
 }
@@ -497,6 +535,20 @@ static void status_cb(Octstr *msg_s, void *d)
     msg_destroy(msg);
 }
 
+static void status_cb_hash(Dict *msg_h, void *d)
+{
+    struct status *data = d;
+    Msg *msg;
+
+    msg = hash_msg_unpack(msg_h);
+    if (msg == NULL)
+        return;
+
+    data->callback_fn(msg, data->data);
+
+    msg_destroy(msg);
+}
+
 
 static void store_redis_for_each_message(void(*callback_fn)(Msg* msg, void *data), void *data)
 {
@@ -509,7 +561,10 @@ static void store_redis_for_each_message(void(*callback_fn)(Msg* msg, void *data
     d.data = data;
 
     /* ignore error because files may disappear */
-    store_redis_getall(1, status_cb, &d);
+    if (hash)
+        store_redis_getall_hash(1, status_cb_hash, &d);
+    else
+        store_redis_getall(1, status_cb, &d);
 }
 
 
@@ -582,6 +637,7 @@ static int store_redis_save(Msg *msg)
 {
     char id[UUID_STR_LEN + 1];
     Octstr *id_s;
+    int rc = 0;
 
     /* always set msg id and timestamp */
     if (msg_type(msg) == sms && uuid_is_null(msg->sms.id))
@@ -591,7 +647,7 @@ static int store_redis_save(Msg *msg)
         time(&msg->sms.time);
 
     if (pool == NULL)
-        return 0;
+        return -1;
 
     /* block here if store still not loaded */
     gwlist_consume(loaded);
@@ -604,7 +660,7 @@ static int store_redis_save(Msg *msg)
 
             /* XXX we could use function pointers to avoid iteration checks */
             if (hash) {
-                store_redis_add_msg(id_s, msg);
+                rc = store_redis_add_msg(id_s, msg);
             } else {
                 Octstr *os = store_msg_pack(msg);
 
@@ -612,11 +668,12 @@ static int store_redis_save(Msg *msg)
                     error(0, "Could not pack message.");
                     return -1;
                 }
-                store_redis_add(id_s, os);
+                rc = store_redis_add(id_s, os);
                 octstr_destroy(os);
             }
             octstr_destroy(id_s);
-            counter_increase(counter);
+            if (!rc)
+                counter_increase(counter);
             break;
         }
         case ack:
@@ -624,18 +681,19 @@ static int store_redis_save(Msg *msg)
             uuid_unparse(msg->ack.id, id);
             id_s = octstr_create(id);
             if (hash)
-                store_redis_delete_hash(id_s);
+                rc = store_redis_delete_hash(id_s);
             else
-                store_redis_delete(id_s);
+                rc = store_redis_delete(id_s);
             octstr_destroy(id_s);
-            counter_decrease(counter);
+            if (!rc)
+                counter_decrease(counter);
             break;
         }
         default:
             return -1;
     }
 
-    return 0;
+    return rc;
 }
 
 
@@ -709,16 +767,16 @@ int store_redis_init(Cfg *cfg)
     while (grplist && (grp = gwlist_extract_first(grplist)) != NULL) {
         p = cfg_get(grp, octstr_imm("id"));
         if (p != NULL && octstr_compare(p, redis_id) == 0) {
-            goto found;
+            octstr_destroy(p);
+            break;
         }
         if (p != NULL)
             octstr_destroy(p);
     }
-    panic(0, "Connection settings for 'redis-connection' with id '%s' are not specified!",
-          octstr_get_cstr(redis_id));
+    if (grp == NULL)
+        panic(0, "Connection settings for 'redis-connection' with id '%s' are not specified!",
+            octstr_get_cstr(redis_id));
 
-found:
-    octstr_destroy(p);
     gwlist_destroy(grplist, NULL);
 
     if (cfg_get_integer(&pool_size, grp, octstr_imm("max-connections")) == -1 || pool_size == 0)

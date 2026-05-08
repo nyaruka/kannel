@@ -247,8 +247,10 @@ static Octstr *httpd_graceful_restart(List *cgivars, int status_type)
         bb_restart();
         return octstr_create("Already in shutdown phase, restarting hard...");
     }
-    bb_graceful_restart();
-    return octstr_create("Restarting gracefully.....");
+    if (bb_graceful_restart() == -1)
+        return octstr_create("Unable to restart gracefully! Please check log file.");
+    else
+        return octstr_create("Restarting gracefully.....");
 }
 
 static Octstr *httpd_flush_dlr(List *cgivars, int status_type)
@@ -407,19 +409,24 @@ static void httpd_serve(HTTPClient *client, Octstr *ourl, List *headers,
     /* Set default reply format according to client
      * Accept: header */
     if (http_type_accepted(headers, "text/vnd.wap.wml")) {
-	status_type = BBSTATUS_WML;
-	content_type = "text/vnd.wap.wml";
+        status_type = BBSTATUS_WML;
+        content_type = "text/vnd.wap.wml";
     }
     else if (http_type_accepted(headers, "text/html")) {
-	status_type = BBSTATUS_HTML;
-	content_type = "text/html";
+        status_type = BBSTATUS_HTML;
+        content_type = "text/html";
     }
     else if (http_type_accepted(headers, "text/xml")) {
-	status_type = BBSTATUS_XML;
-	content_type = "text/xml";
-    } else {
-	status_type = BBSTATUS_TEXT;
-	content_type = "text/plain";
+        status_type = BBSTATUS_XML;
+        content_type = "text/xml";
+    }
+    else if (http_type_accepted(headers, "application/xml")) {
+        status_type = BBSTATUS_XML;
+        content_type = "application/xml";
+    }
+    else {
+        status_type = BBSTATUS_TEXT;
+        content_type = "text/plain";
     }
 
     /* kill '/cgi-bin' prefix */
@@ -435,14 +442,22 @@ static void httpd_serve(HTTPClient *client, Octstr *ourl, List *headers,
         Octstr *tmp = octstr_copy(url, pos+1, octstr_len(url) - pos - 1);
         octstr_delete(url, pos, octstr_len(url) - pos);
 
-        if (octstr_str_compare(tmp, "txt") == 0)
+        if (octstr_str_compare(tmp, "txt") == 0) {
             status_type = BBSTATUS_TEXT;
-        else if (octstr_str_compare(tmp, "html") == 0)
+            content_type = "text/plain";
+        }
+        else if (octstr_str_compare(tmp, "html") == 0) {
             status_type = BBSTATUS_HTML;
-        else if (octstr_str_compare(tmp, "xml") == 0)
+            content_type = "text/html";
+        }
+        else if (octstr_str_compare(tmp, "xml") == 0) {
             status_type = BBSTATUS_XML;
-        else if (octstr_str_compare(tmp, "wml") == 0)
+            content_type = "application/xml";
+        }
+        else if (octstr_str_compare(tmp, "wml") == 0) {
             status_type = BBSTATUS_WML;
+            content_type = "text/vnd.wap.wml";
+        }
 
         octstr_destroy(tmp);
     }

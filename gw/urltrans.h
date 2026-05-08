@@ -84,7 +84,7 @@
 #include "gwlib/gwlib.h"
 #include "msg.h"
 #include "numhash.h"
-#include "gwlib/regex.h"
+#include "gwlib/gw-regex.h"
 
 /*
  * This is the data structure that holds the list of translations. It is
@@ -318,6 +318,8 @@ Octstr *urltrans_allowed_prefix(URLTranslation *t);
 Octstr *urltrans_denied_prefix(URLTranslation *t);
 Octstr *urltrans_allowed_recv_prefix(URLTranslation *t);
 Octstr *urltrans_denied_recv_prefix(URLTranslation *t);
+regex_t *urltrans_allowed_prefix_regex(URLTranslation *t);
+regex_t *urltrans_denied_prefix_regex(URLTranslation *t);
 
 /* Return white and black to number list */
 Numhash *urltrans_white_list(URLTranslation *t);
@@ -335,5 +337,9 @@ int urltrans_send_sender(URLTranslation *t);
 /* Return DLR related values */
 Octstr *urltrans_dlr_url(URLTranslation *t);
 int urltrans_dlr_mask(URLTranslation *t);
+
+/* Returned priority related values */
+int urltrans_forced_priority(URLTranslation *t);
+int urltrans_max_priority(URLTranslation *t);
 
 #endif

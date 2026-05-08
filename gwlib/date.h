@@ -73,6 +73,7 @@ struct universaltime
     long hour;     /* 0-23 */
     long minute;   /* 0-59 */
     long second;   /* 0-59 */
+    long offset_sec;
 };
 
 

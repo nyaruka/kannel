@@ -373,8 +373,8 @@ static void help(void)
     info(0, "-f");
     info(0, "    don't follow redirects");
     info(0, "-V");
-    info(0, "    evaluate for URL escape code patterns (%r - random number,");
-    info(0, "    %I - UUID string)");
+    info(0, "    evaluate for URL escape code patterns (%%r - random number,");
+    info(0, "    %%I - UUID string)");
 }
 
 int main(int argc, char **argv) 

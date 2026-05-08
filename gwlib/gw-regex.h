@@ -70,8 +70,8 @@
  * Stipe Tolj <stolj@kannel.org>
  */
 
-#ifndef REGEX_H
-#define REGEX_H
+#ifndef GW_REGEX_H
+#define GW_REGEX_H
 
 #ifdef HAVE_PCRE
 # include <pcreposix.h>
@@ -192,6 +192,6 @@ Octstr *gw_regex_subst_pre_real(const regex_t *preg, const Octstr *os, const Oct
 
 
 #endif
-#endif  /* REGEX_H */
+#endif  /* GW_REGEX_H */
 
 

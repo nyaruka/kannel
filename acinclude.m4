@@ -105,16 +105,18 @@ AC_DEFUN([AC_SVN_REVISION],
 dnl Available from the GNU Autoconf Macro Archive at:
 dnl http://www.gnu.org/software/ac-archive/htmldoc/ac_caolan_func_which_gethostbyname_r.html
 dnl Modified by Alexander Malysh for Kannel Project.
-
+dnl
 AC_DEFUN([AC_FUNC_WHICH_GETHOSTBYNAME_R],
 [AC_CACHE_CHECK(for which type of gethostbyname_r, ac_cv_func_which_gethostname_r, [
 AC_TRY_COMPILE([
 #include <netdb.h>
   ], [
+
         char *name;
         struct hostent *he;
         struct hostent_data data;
         (void) gethostbyname_r(name, he, &data);
+
      ], ac_cv_func_which_gethostname_r=3, [
 AC_TRY_COMPILE([
 #include <netdb.h>
@@ -139,21 +141,46 @@ AC_TRY_COMPILE([
    )]
 )])
 if test $ac_cv_func_which_gethostname_r -eq 6; then
-  AC_DEFINE(HAVE_FUNC_GETHOSTBYNAME_R_6)
+  AC_DEFINE(HAVE_FUNC_GETHOSTBYNAME_R_6, 1, [gethostbyname have 6 arguments])
 elif test $ac_cv_func_which_gethostname_r -eq 5; then
-  AC_DEFINE(HAVE_FUNC_GETHOSTBYNAME_R_5)
+  AC_DEFINE(HAVE_FUNC_GETHOSTBYNAME_R_5, 1, [gethostbyname have 5 arguments])
 elif test $ac_cv_func_which_gethostname_r -eq 3; then
-  AC_DEFINE(HAVE_FUNC_GETHOSTBYNAME_R_3)
+  AC_DEFINE(HAVE_FUNC_GETHOSTBYNAME_R_3, 1, [gethostbyname have 3 arguments])
 elif test $ac_cv_func_which_gethostname_r -eq 0; then
   ac_cv_func_which_gethostname_r = no
 fi
 ])
 
 
+dnl GW_HAVE_TYPE_FROM(HDRNAME, TYPE, HAVENAME, DESCRIPTION)
+AC_DEFUN([GW_HAVE_TYPE_FROM], [
+	AC_CACHE_CHECK([for $2 in <$1>], gw_cv_type_$3,
+		AC_TRY_COMPILE([#ifdef HAVE_SYS_TYPES_H
+#include <sys/types.h>
+#endif
+#include <$1>
+], [$2 foo;],
+			gw_cv_type_$3=yes, gw_cv_type_$3=no))
+        if test $gw_cv_type_$3 = yes; then
+                AC_DEFINE($3, 1, $4)
+        fi
+])
+
+dnl GW_HAVE_FUNC_FROM(HDRNAME, FUNC, HAVENAME, DESCRIPTION)
+AC_DEFUN([GW_HAVE_FUNC_FROM], [
+        AC_CACHE_CHECK([for $2 in <$1>], gw_cv_func_$3,
+                AC_TRY_COMPILE([#include <$1>], [void *foo = $2;],
+                        gw_cv_func_$3=yes, gw_cv_func_$3=no))
+        if test $gw_cv_func_$3 = yes; then
+                AC_DEFINE($3, 1, $4)
+        fi
+])
+
+
 dnl Creates a config.nice shell script that contains all given configure
 dnl options to the orginal configure call. Can be used to add further options
 dnl in additional re-configure calls. This is perfect while handling with a
-dnl large number of configure option switches. 
+dnl large number of configure option switches.
 dnl This macro is taken from PHP5 aclocal.m4, Stipe Tolj.
 
 AC_DEFUN([AC_CONFIG_NICE],

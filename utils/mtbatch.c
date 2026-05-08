@@ -66,12 +66,12 @@
  * Vincent Chavanis <v.chavanis@telemaque.fr>
  *
  * XXX Add UDH capabilities.
- * XXX Support more charsets than 7-bit.
  */
 
 #include <string.h>
 #include <unistd.h>
 #include <signal.h>
+#include <ctype.h>
 
 #include "gwlib/gwlib.h"
 
@@ -98,6 +98,11 @@ static Octstr *dlr_url = NULL;
 static Octstr *smsc_id = NULL;
 static double delay = 0;
 static int no_smsbox_id = 0;
+static Octstr *meta_data = NULL;
+static int coding = DC_7BIT;
+static Octstr *charset = NULL;
+static Octstr *payload = NULL;
+static int msg_log = 0;
 
 static void write_pid_file(void) {
     FILE *f;
@@ -156,6 +161,11 @@ static void read_messages_from_bearerbox(void *arg)
         else if (msg == NULL) /* just to be sure, may not happens */
             break;
 
+        if (msg_log) {
+            debug("msg", 0, "Received message from bearerbox:");
+            msg_dump(msg, 0);
+        }
+
         if (msg_type(msg) == admin) {
             if (msg->admin.command == cmd_shutdown ||
                 msg->admin.command == cmd_restart) {
@@ -190,54 +200,31 @@ static void read_messages_from_bearerbox(void *arg)
         }
     }
     secs = difftime(time(NULL), start);
-    info(0, "Received acks: %ld success, %ld failed, %ld failed temporarly, %ld queued, %ld other in %ld seconds "
+    info(0, "Received ACKs: %ld success, %ld failed, %ld failed temporarly, %ld queued, %ld other in %ld seconds "
          "(%.2f per second)", total_s, total_f, total_ft, total_b, total_o, secs,
          (float)(total_s+total_f+total_ft+total_b) / secs);
 }
 
 /*
  * Send a message to the bearerbox for delivery to a phone.
- * Return >= 0 for success & count of splitted sms messages, 
- * -1 for failure.  Does not destroy the msg.
+ * Return 0 on success, and destroys the message,
+ * otherwise -1 for failure, without destroying the message.
  */
 static int send_message(Msg *msg)
 {
-    unsigned long msg_count;
-    List *list;
-    
     gw_assert(msg != NULL);
     gw_assert(msg_type(msg) == sms);
-    
-    /* 
-     * Encode our smsbox-id to the msg structure.
-     * This will allow bearerbox to return specific answers to the
-     * same smsbox, mainly for DLRs and SMS proxy modes.
-     *
-     * In addition the -x flag can be used to identify the mtbatch
-     * instance with an own smsbox-id, but let the normal smsbox
-     * daemons handle the DLRs coming back, as the mtbatch shuts down
-     * after all MTs have been injected. It's not meant to process
-     * the DLR messages.
-     */
-    if (no_smsbox_id == 0 && smsbox_id != NULL) {
-        msg->sms.boxc_id = octstr_duplicate(smsbox_id);
-    }
-    
-    list = sms_split(msg, NULL, NULL, NULL, NULL, 1, 0, 100, MAX_SMS_OCTETS);
-    msg_count = gwlist_len(list);
-    gwlist_destroy(list, msg_destroy_item);
-
-    debug("sms", 0, "message length %ld, sending %ld messages", 
-          octstr_len(msg->sms.msgdata), msg_count);
 
     if (delay > 0)
         gwthread_sleep(delay);
 
+    if (msg_log) {
+        debug("msg", 0, "Sending message to bearerbox:");
+        msg_dump(msg, 0);
+    }
+
     /* pass message to bearerbox */
-    if (deliver_to_bearerbox(msg) != 0)
-        return -1;
-    
-    return msg_count;
+    return deliver_to_bearerbox(msg);
 }
 
 
@@ -252,7 +239,7 @@ static void help(void)
     info(0, "-p port");
     info(0, "    the smsbox port to connect to (default: 13001)");
     info(0, "-s");
-    info(0, "    inidicatr to use SSL for bearerbox connection (default: no)");
+    info(0, "    inidicator to use SSL for bearerbox connection (default: no)");
     info(0, "-i smsbox-id");
     info(0, "    defines the smsbox-id to be used for bearerbox connection (default: none)");
     info(0, "-x");
@@ -271,6 +258,14 @@ static void help(void)
     info(0, "    delay between message sending to bearerbox (default: 0)");
     info(0, "-r smsc-id");
     info(0, "    use a specific route for the MT traffic");
+    info(0, "-M meta-data");
+    info(0, "    defines the meta-data");
+    info(0, "-c coding (0: UTF-8, 1: binary, 2: UCS-2; default: 0)");
+    info(0, "    defines the coding");
+    info(0, "-C charset (iconv name; default: UTF-8");
+    info(0, "    defines which character encoding is used in content-file");
+    info(0, "-m");
+    info(0, "    indicator to dump messages exchanged with bearebrox (default: no)");
 }
 
 static void init_batch(Octstr *cfilename, Octstr *rfilename)
@@ -278,13 +273,61 @@ static void init_batch(Octstr *cfilename, Octstr *rfilename)
     Octstr *receivers;
     long lineno = 0; 
 
+    /* read content file */
     content = octstr_read_file(octstr_get_cstr(cfilename)); 
     octstr_strip_crlfs(content);
     if (content == NULL) 
         panic(0,"Can not read content file `%s'.", 
               octstr_get_cstr(cfilename));
-    info(0,"SMS-Text: <%s>", octstr_get_cstr(content));
 
+    /* handle transcoding */
+    switch (coding) {
+        case DC_8BIT: {
+            payload = octstr_duplicate(content);
+            info(0, "SMS message (binary), coding 1 (DC_8BIT):");
+            octstr_dump(payload, 0, GW_INFO);
+        }
+        break;
+        case DC_7BIT: {
+            octstr_strip_crlfs(content);
+            payload = octstr_duplicate(content);
+
+            /* convert to UTF-8 if given in other charset */
+            if (charset != NULL) {
+                if (charset_convert(payload, octstr_get_cstr(charset), "UTF-8") != 0) {
+                    error(0, "Failed to convert content from %s to UTF-8, will leave as is.",
+                          octstr_get_cstr(charset));
+                }
+                info(0, "Content (%s):", octstr_get_cstr(charset));
+                octstr_dump(content, 0, GW_INFO);
+            }
+            info(0, "SMS message (UTF-8), coding 0 (DC_7BIT):");
+            octstr_dump(payload, 0, GW_INFO);
+        }
+        break;
+        case DC_UCS2: {
+            octstr_strip_crlfs(content);
+            payload = octstr_duplicate(content);
+
+            /* convert to UTF-16BE (Unicode) */
+            if (charset == NULL)
+                charset = octstr_imm("UTF-8");
+            if (charset_convert(payload, octstr_get_cstr(charset), "UTF-16BE") != 0) {
+                error(0, "Failed to convert content from %s to UTF-16BE (Unicode), will leave as is.",
+                      octstr_get_cstr(charset));
+            }
+            info(0, "Content (%s):", octstr_get_cstr(charset));
+            octstr_dump(content, 0, GW_INFO);
+            info(0, "SMS message (UTF-16BE, Unicode), coding 2 (DCS_UCS2):");
+            octstr_dump(payload, 0, GW_INFO);
+        }
+        break;
+        default:
+            panic(0, "Coding value %d out of range!", coding);
+            break;
+    }
+
+    /* read receivers */
     info(0,"Loading receiver list. This may take a while...");
     receivers = octstr_read_file(octstr_get_cstr(rfilename)); 
     if (receivers == NULL) 
@@ -296,10 +339,15 @@ static void init_batch(Octstr *cfilename, Octstr *rfilename)
     if (lineno <= 0) 
         panic(0,"Receiver file seems empty!");
 
-    info(0,"Receivers file `%s' contains %ld destination numbers.",
+    info(0,"Receivers file `%s' contains %ld destination address(es).",
          octstr_get_cstr(rfilename), lineno);
 
     counter = counter_create();
+}
+
+static int gw_ismsisdnchar(int c)
+{
+    return (isdigit(c) || c == '+');
 }
 
 static unsigned long run_batch(void)
@@ -307,28 +355,64 @@ static unsigned long run_batch(void)
     Octstr *no;
     unsigned long linerr = 0;
     unsigned long lineno = 0;
+    Msg *tmsg;
+    unsigned long msg_count;
+    List *list;
 
+    /*
+     * Create message template.
+     * Receiver is set in the duplicate that is send.
+     */
+    tmsg = msg_create(sms);
+    tmsg->sms.smsc_id = smsc_id ? octstr_duplicate(smsc_id) : NULL;
+    tmsg->sms.service = service ? octstr_duplicate(service) : NULL;
+    tmsg->sms.sms_type = mt_push;
+    tmsg->sms.sender = octstr_duplicate(from);
+    tmsg->sms.account = account ? octstr_duplicate(account) : NULL;
+    tmsg->sms.msgdata = payload ? octstr_duplicate(payload) : octstr_create("");
+    tmsg->sms.dlr_mask = dlr_mask;
+    tmsg->sms.dlr_url = octstr_duplicate(dlr_url);
+    tmsg->sms.udhdata = octstr_create("");
+    tmsg->sms.coding = coding;
+    tmsg->sms.meta_data = octstr_duplicate(meta_data);
+
+    /*
+     * Encode our smsbox-id to the msg structure.
+     * This will allow bearerbox to return specific answers to the
+     * same smsbox, mainly for DLRs and SMS proxy modes.
+     *
+     * In addition the -x flag can be used to identify the mtbatch
+     * instance with an own smsbox-id, but let the normal smsbox
+     * daemons handle the DLRs coming back, as the mtbatch shuts down
+     * after all MTs have been injected. It's not meant to process
+     * the DLR messages.
+     */
+    if (no_smsbox_id == 0 && smsbox_id != NULL) {
+        tmsg->sms.boxc_id = octstr_duplicate(smsbox_id);
+    }
+
+    list = sms_split(tmsg, NULL, NULL, NULL, NULL, 1, 0, 100, MAX_SMS_OCTETS);
+    msg_count = gwlist_len(list);
+    gwlist_destroy(list, msg_destroy_item);
+
+    if (msg_count > 1) {
+        debug("sms", 0, "Message length %ld octets, will send %ld concat parts for each message.",
+              octstr_len(tmsg->sms.msgdata), msg_count);
+    }
+
+    /*
+     * Send loop
+     */
     while ((no = gwlist_consume(lines)) != NULL) {
-        if (octstr_check_range(no, 0, 256, gw_isdigit)) {
+        if (octstr_check_range(no, 0, 256, gw_ismsisdnchar)) {
             Msg *msg;
         
             lineno++;
 
-            msg = msg_create(sms);
-
-            msg->sms.smsc_id = smsc_id ? octstr_duplicate(smsc_id) : NULL;
-            msg->sms.service = service ? octstr_duplicate(service) : NULL;
-            msg->sms.sms_type = mt_push;
-            msg->sms.sender = octstr_duplicate(from);
+            msg = msg_duplicate(tmsg);
             msg->sms.receiver = octstr_duplicate(no);
-            msg->sms.account = account ? octstr_duplicate(account) : NULL;
-            msg->sms.msgdata = content ? octstr_duplicate(content) : octstr_create("");
-            msg->sms.dlr_mask = dlr_mask;
-            msg->sms.dlr_url = octstr_duplicate(dlr_url);
-            msg->sms.udhdata = octstr_create("");
-            msg->sms.coding = DC_7BIT;
 
-            if (send_message(msg) < 0) {
+            if (send_message(msg) != 0) {
                 linerr++;
                 info(0,"Failed to send message at line <%ld> for receiver `%s' to bearerbox.",
                       lineno, octstr_get_cstr(no));
@@ -337,12 +421,13 @@ static unsigned long run_batch(void)
         }
         else {
             linerr++;
-            error(0, "Receiver `%s' at line <%ld> contains non-digit characters, discarded!",
+            error(0, "Receiver `%s' at line <%ld> contains non-MSISDN characters, discarded!",
                   octstr_get_cstr(no), lineno);
         }
         octstr_destroy(no);
     }
-    info(0,"mtbatch has processed %ld messages with %ld errors.", lineno, linerr);
+    info(0, "Processed batch of %ld messages with %ld send errors.", lineno, linerr);
+    msg_destroy(tmsg);
     return lineno;
 } 
 
@@ -358,7 +443,7 @@ int main(int argc, char **argv)
     bb_port = 13001;
     bb_ssl = 0;
         
-    while ((opt = getopt(argc, argv, "hv:b:p:si:xn:a:f:D:u:d:r:")) != EOF) {
+    while ((opt = getopt(argc, argv, "hv:b:p:si:xn:a:f:D:u:d:r:M:c:C:m")) != EOF) {
         switch (opt) {
             case 'v':
                 log_set_output_level(atoi(optarg));
@@ -400,6 +485,18 @@ int main(int argc, char **argv)
             case 'r':
                 smsc_id = octstr_create(optarg);
                 break;
+            case 'M':
+                 meta_data = octstr_create(optarg);
+                 break;
+            case 'c':
+                coding = atoi(optarg);
+                break;
+            case 'C':
+                 charset = octstr_create(optarg);
+                 break;
+            case 'm':
+                msg_log = 1;
+                break;
             case '?':
             default:
                 error(0, "Invalid option %c", opt);
@@ -434,7 +531,7 @@ int main(int argc, char **argv)
 
     sended = run_batch();
 
-    /* avoid exiting before sending all msgs */
+    /* avoid exiting before receiving all ACK msgs */
     while (sended > counter_value(counter)) {
          gwthread_sleep(0.1);
     }
@@ -449,6 +546,9 @@ int main(int argc, char **argv)
     octstr_destroy(account);
     octstr_destroy(dlr_url);
     octstr_destroy(smsc_id);
+    octstr_destroy(meta_data);
+    octstr_destroy(charset);
+    octstr_destroy(payload);
     counter_destroy(counter);
     gwlist_destroy(lines, octstr_destroy_item); 
    

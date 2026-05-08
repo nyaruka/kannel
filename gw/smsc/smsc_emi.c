@@ -1478,67 +1478,81 @@ static int emi2_open_listening_socket(SMSCConn *conn, PrivData *privdata)
 
 static void emi2_listener(void *arg)
 {
-    SMSCConn	*conn = arg;
-    PrivData	*privdata = conn->data;
+    SMSCConn *conn = arg;
+    PrivData *privdata = conn->data;
     struct sockaddr_in server_addr;
-    socklen_t	server_addr_len;
-    Octstr	*ip;
-    Connection	*server;
-    int 	s, ret;
+    socklen_t server_addr_len;
+    Octstr *ip;
+    Connection *server;
+    int s, ret;
 
     /* Make sure we log into our own log-file if defined */
     log_thread_to(conn->log_idx);
 
     while (!privdata->shutdown) {
-	server_addr_len = sizeof(server_addr);
-	ret = gwthread_pollfd(privdata->listening_socket, POLLIN, -1);
-	if (ret == -1) {
-	    if (errno == EINTR)
-		continue;
-	    error(0, "EMI2[%s]: Poll for emi2 smsc connections failed, shutting down",
-		  octstr_get_cstr(privdata->name));
-	    break;
-	}
-	if (privdata->shutdown)
-	    break;
-	if (ret == 0) /* This thread was woken up from elsewhere, but
-			 if we're not shutting down nothing to do here. */
-	    continue;
-	s = accept(privdata->listening_socket, (struct sockaddr *)&server_addr,
-		   &server_addr_len);
-	if (s == -1) {
-	    warning(errno, "EMI2[%s]: emi2_listener: accept() failed, retrying...",
-		    octstr_get_cstr(privdata->name));
-	    continue;
-	}
-	ip = host_ip(server_addr);
-	if (!is_allowed_ip(privdata->allow_ip, privdata->deny_ip, ip)) {
-	    info(0, "EMI2[%s]: smsc connection tried from denied host <%s>,"
-		 " disconnected", octstr_get_cstr(privdata->name), 
-		 octstr_get_cstr(ip));
-	    octstr_destroy(ip);
-	    close(s);
-	    continue;
-	}
-	server = conn_wrap_fd(s, 0);
-	if (server == NULL) {
-	    error(0, "EMI2[%s]: emi2_listener: conn_wrap_fd failed on accept()ed fd",
-		  octstr_get_cstr(privdata->name));
-	    octstr_destroy(ip);
-	    close(s);
-	    continue;
-	}
-	conn_claim(server);
-	info(0, "EMI2[%s]: smsc connected from %s", 
-	     octstr_get_cstr(privdata->name), octstr_get_cstr(ip));
-	octstr_destroy(ip);
 
-	emi2_receiver(conn, server);
-	conn_destroy(server);
+        if (!privdata->host) {
+            mutex_lock(conn->flow_mutex);
+            conn->status = SMSCCONN_CONNECTING;
+            conn->connect_time = time(NULL);
+            mutex_unlock(conn->flow_mutex);
+        }
+
+        server_addr_len = sizeof(server_addr);
+        ret = gwthread_pollfd(privdata->listening_socket, POLLIN, -1);
+        if (ret == -1) {
+            if (errno == EINTR)
+                continue;
+            error(0, "EMI2[%s]: Poll for emi2 smsc connections failed, shutting down",
+                  octstr_get_cstr(privdata->name));
+            break;
+        }
+        if (privdata->shutdown)
+            break;
+        if (ret == 0) /* This thread was woken up from elsewhere, but
+			             if we're not shutting down nothing to do here. */
+            continue;
+        s = accept(privdata->listening_socket, (struct sockaddr *)&server_addr, &server_addr_len);
+        if (s == -1) {
+            warning(errno, "EMI2[%s]: emi2_listener: accept() failed, retrying...",
+                    octstr_get_cstr(privdata->name));
+            continue;
+        }
+        ip = host_ip(server_addr);
+        if (!is_allowed_ip(privdata->allow_ip, privdata->deny_ip, ip)) {
+            info(0, "EMI2[%s]: smsc connection tried from denied host <%s>,"
+                    " disconnected", octstr_get_cstr(privdata->name),
+                 octstr_get_cstr(ip));
+            octstr_destroy(ip);
+            close(s);
+            continue;
+        }
+        server = conn_wrap_fd(s, 0);
+        if (server == NULL) {
+            error(0, "EMI2[%s]: emi2_listener: conn_wrap_fd failed on accept()ed fd",
+                  octstr_get_cstr(privdata->name));
+            octstr_destroy(ip);
+            close(s);
+            continue;
+        }
+        conn_claim(server);
+        info(0, "EMI2[%s]: smsc connected from %s",
+             octstr_get_cstr(privdata->name), octstr_get_cstr(ip));
+        octstr_destroy(ip);
+
+        if (!privdata->host) {
+            mutex_lock(conn->flow_mutex);
+            conn->status = SMSCCONN_ACTIVE;
+            conn->connect_time = time(NULL);
+            mutex_unlock(conn->flow_mutex);
+        }
+
+        emi2_receiver(conn, server);
+        conn_destroy(server);
     }
     if (close(privdata->listening_socket) == -1)
-	warning(errno, "EMI2[%s]: couldn't close listening socket "
-		"at shutdown", octstr_get_cstr(privdata->name));
+        warning(errno, "EMI2[%s]: couldn't close listening socket at shutdown",
+                octstr_get_cstr(privdata->name));
     gwthread_wakeup(privdata->sender_thread);
 }
 
@@ -1560,25 +1574,28 @@ static int shutdown_cb(SMSCConn *conn, int finish_sending)
 {
     PrivData *privdata = conn->data;
 
+    if (!privdata->host)
+        finish_sending = 0;
+
     debug("bb.sms", 0, "EMI2[%s]: Shutting down SMSCConn EMI2, %s",
-	  octstr_get_cstr(privdata->name), 
-	  finish_sending ? "slow" : "instant");
+          octstr_get_cstr(privdata->name),
+          finish_sending ? "slow" : "instant");
 
     /* Documentation claims this would have been done by smscconn.c,
        but isn't when this code is being written. */
     conn->why_killed = SMSCCONN_KILLED_SHUTDOWN;
     privdata->shutdown = 1; /* Separate from why_killed to avoid locking, as
-			   why_killed may be changed from outside? */
+			                   why_killed may be changed from outside? */
 
     if (finish_sending == 0) {
-	Msg *msg;
-	while((msg = gw_prioqueue_remove(privdata->outgoing_queue)) != NULL) {
-	    bb_smscconn_send_failed(conn, msg, SMSCCONN_FAILED_SHUTDOWN, NULL);
-	}
+        Msg *msg;
+        while ((msg = gw_prioqueue_remove(privdata->outgoing_queue)) != NULL) {
+            bb_smscconn_send_failed(conn, msg, SMSCCONN_FAILED_SHUTDOWN, NULL);
+        }
     }
 
     if (privdata->rport > 0)
-	gwthread_wakeup(privdata->receiver_thread);
+        gwthread_wakeup(privdata->receiver_thread);
     return 0;
 }
 
@@ -1628,63 +1645,61 @@ int smsc_emi2_create(SMSCConn *conn, CfgGroup *cfg)
     privdata->priv_nexttrn = 0;
     privdata->last_activity_time = 0;
     privdata->check_time = 0;
-    
+
+    /* host may be empty if receive-port is used */
     host = cfg_get(cfg, octstr_imm("host"));
-    if (host == NULL) {
-	error(0, "EMI2[-]: 'host' missing in emi2 configuration.");
-	goto error;
-    }
     privdata->host = host;
 
     if (cfg_get_integer(&portno, cfg, octstr_imm("port")) == -1)
-	portno = 0;
+        portno = 0;
     privdata->port = portno;
-    if (privdata->port <= 0 || privdata->port > 65535) {
-	error(0, "EMI2[%s]: 'port' missing/invalid in emi2 configuration.",
-	      octstr_get_cstr(host));
-	goto error;
+    if (host && (privdata->port <= 0 || privdata->port > 65535)) {
+        error(0, "EMI2[%s]: 'port' missing/invalid in emi2 configuration.",
+              octstr_get_cstr(host));
+        goto error;
     }
 
     if (cfg_get_integer(&our_port, cfg, octstr_imm("our-port")) == -1)
-	privdata->our_port = 0; /* 0 means use any port */
+        privdata->our_port = 0; /* 0 means use any port */
     else
-	privdata->our_port = our_port;
+        privdata->our_port = our_port;
 
     privdata->name = cfg_get(cfg, octstr_imm("smsc-id"));
-    if(privdata->name == NULL) {
-	privdata->name = octstr_create("");
+    if (privdata->name == NULL) {
+        privdata->name = octstr_create("");
 
-	/* Add our_host */
-	if(octstr_len(conn->our_host)) {
-	    octstr_append(privdata->name, conn->our_host);
-	}
+        /* Add our_host */
+        if (octstr_len(conn->our_host)) {
+            octstr_append(privdata->name, conn->our_host);
+        }
 
-	/* Add our_port */
-	if(privdata->our_port != 0) {
-	    /* if we have our_port but not our_host, add kannel:our_port */
-	    if(octstr_len(privdata->name) == 0) {
-		octstr_append(privdata->name, octstr_imm("kannel"));
-	    }
-	    octstr_append_char(privdata->name, ':');
-	    octstr_append_decimal(privdata->name, privdata->our_port);
-	} else {
-	    if(octstr_len(privdata->name) != 0) {
-		octstr_append(privdata->name, octstr_imm(":*"));
-	    }
-	}
+        /* Add our_port */
+        if (privdata->our_port != 0) {
+            /* if we have our_port but not our_host, add kannel:our_port */
+            if(octstr_len(privdata->name) == 0) {
+                octstr_append(privdata->name, octstr_imm("kannel"));
+            }
+            octstr_append_char(privdata->name, ':');
+            octstr_append_decimal(privdata->name, privdata->our_port);
+        } else {
+            if(octstr_len(privdata->name) != 0) {
+                octstr_append(privdata->name, octstr_imm(":*"));
+            }
+        }
 	    
-	/* if we have our_host neither our_port */
-	if(octstr_len(privdata->name) != 0)
-	    octstr_append(privdata->name, octstr_imm("->"));
+        /* if we have our_host neither our_port */
+        if (octstr_len(privdata->name) != 0)
+            octstr_append(privdata->name, octstr_imm("->"));
 
-	octstr_append(privdata->name, privdata->host);
-	octstr_append_char(privdata->name, ':');
-	octstr_append_decimal(privdata->name, privdata->port);
+        if (privdata->host) {
+            octstr_append(privdata->name, privdata->host);
+            octstr_append_char(privdata->name, ':');
+            octstr_append_decimal(privdata->name, privdata->port);
+        }
     }
 
-
     if (cfg_get_integer(&idle_timeout, cfg, octstr_imm("idle-timeout")) == -1)
-	idle_timeout = 0;
+        idle_timeout = 0;
     
     privdata->idle_timeout = idle_timeout;
 
@@ -1692,18 +1707,25 @@ int smsc_emi2_create(SMSCConn *conn, CfgGroup *cfg)
     privdata->alt_host = alt_host;
 
     if (cfg_get_integer(&portno, cfg, octstr_imm("receive-port")) < 0)
-	portno = 0;
+        portno = 0;
     privdata->rport = portno;
 
+    /* if neither host, nor receive-port is defined */
+    if (privdata->host == NULL && privdata->rport == 0) {
+        error(0, "EMI2[-]: 'receive-port' missing/invalid in emi2 configuration, "
+                 "while no 'host' and 'port' defined.");
+        goto error;
+    }
+
     if (cfg_get_integer(&alt_portno, cfg, octstr_imm("alt-port")) < 0) 
-	alt_portno = 0;
+        alt_portno = 0;
     privdata->alt_port = alt_portno;
 
     allow_ip = cfg_get(cfg, octstr_imm("connect-allow-ip"));
     if (allow_ip)
-	deny_ip = octstr_create("*.*.*.*");
+        deny_ip = octstr_create("*.*.*.*");
     else
-	deny_ip = NULL;
+        deny_ip = NULL;
     privdata->username = cfg_get(cfg, octstr_imm("smsc-username"));
     privdata->password = cfg_get(cfg, octstr_imm("smsc-password"));
 
@@ -1712,56 +1734,56 @@ int smsc_emi2_create(SMSCConn *conn, CfgGroup *cfg)
     privdata->npid = cfg_get(cfg, octstr_imm("notification-pid"));
     privdata->nadc = cfg_get(cfg, octstr_imm("notification-addr"));
     
-    if ( (privdata->username == NULL && privdata->my_number == NULL)
-         || cfg_get_integer(&keepalive, cfg, octstr_imm("keepalive")) < 0)
-	privdata->keepalive = 0;
+    if ( (privdata->username == NULL && privdata->my_number == NULL) ||
+            cfg_get_integer(&keepalive, cfg, octstr_imm("keepalive")) < 0)
+        privdata->keepalive = 0;
     else
-	privdata->keepalive = keepalive;
+        privdata->keepalive = keepalive;
 
     if (cfg_get_integer(&flowcontrol, cfg, octstr_imm("flow-control")) < 0)
-	privdata->flowcontrol = 0;
+        privdata->flowcontrol = 0;
     else
-	privdata->flowcontrol = flowcontrol;
+        privdata->flowcontrol = flowcontrol;
     if (privdata->flowcontrol < 0 || privdata->flowcontrol > 1) {
-	error(0, "EMI2[%s]: 'flow-control' invalid in emi2 configuration.",
-	      octstr_get_cstr(privdata->name));
-	goto error;
+        error(0, "EMI2[%s]: 'flow-control' invalid in emi2 configuration.",
+	          octstr_get_cstr(privdata->name));
+        goto error;
     }
 
     if (cfg_get_integer(&window, cfg, octstr_imm("window")) < 0)
-	privdata->window = EMI2_MAX_TRN;
+        privdata->window = EMI2_MAX_TRN;
     else
-	privdata->window = window;
+        privdata->window = window;
     if (privdata->window > EMI2_MAX_TRN) {
-	warning(0, "EMI2[%s]: Value of 'window' should be lesser or equal to %d..", 
-		octstr_get_cstr(privdata->name), EMI2_MAX_TRN);
-	privdata->window = EMI2_MAX_TRN;
+        warning(0, "EMI2[%s]: Value of 'window' should be lesser or equal to %d..",
+		        octstr_get_cstr(privdata->name), EMI2_MAX_TRN);
+        privdata->window = EMI2_MAX_TRN;
     }
 
     if (cfg_get_integer(&waitack, cfg, octstr_imm("wait-ack")) < 0)
-	privdata->waitack = 60;
+        privdata->waitack = 60;
     else
-	privdata->waitack = waitack;
+        privdata->waitack = waitack;
     if (privdata->waitack < 30 ) {
-	error(0, "EMI2[%s]: 'wait-ack' invalid in emi2 configuration.",
-	      octstr_get_cstr(privdata->name));
-	goto error;
+        error(0, "EMI2[%s]: 'wait-ack' invalid in emi2 configuration.",
+	          octstr_get_cstr(privdata->name));
+        goto error;
     }
 
     if (cfg_get_integer(&waitack_expire, cfg, octstr_imm("wait-ack-expire")) < 0)
-	privdata->waitack_expire = 0;
+        privdata->waitack_expire = 0;
     else
-	privdata->waitack_expire = waitack_expire;
-    if (privdata->waitack_expire >3  ) {
-	error(0, "EMI2[%s]: 'wait-ack-expire' invalid in emi2 configuration.",
-	      octstr_get_cstr(privdata->name));
-	goto error;
+        privdata->waitack_expire = waitack_expire;
+    if (privdata->waitack_expire >3) {
+        error(0, "EMI2[%s]: 'wait-ack-expire' invalid in emi2 configuration.",
+	          octstr_get_cstr(privdata->name));
+        goto error;
     }
 
     if (privdata->rport < 0 || privdata->rport > 65535) {
-	error(0, "EMI2[%s]: 'receive-port' missing/invalid in emi2 configuration.",
-	      octstr_get_cstr(privdata->name));
-	goto error;
+        error(0, "EMI2[%s]: 'receive-port' missing/invalid in emi2 configuration.",
+	          octstr_get_cstr(privdata->name));
+        goto error;
     }
 
     if (cfg_get_integer(&alt_charset, cfg, octstr_imm("alt-charset")) < 0)
@@ -1773,36 +1795,40 @@ int smsc_emi2_create(SMSCConn *conn, CfgGroup *cfg)
     privdata->deny_ip = deny_ip;
 
     if (privdata->rport > 0 && emi2_open_listening_socket(conn,privdata) < 0) {
-	gw_free(privdata);
-	privdata = NULL;
-	goto error;
+        gw_free(privdata);
+        privdata = NULL;
+        goto error;
     }
 
     conn->data = privdata;
 
-    conn->name = octstr_format("EMI2:%S:%d:%S", privdata->host, privdata->port,
-                               privdata->username ? privdata->username : octstr_imm("null"));
+    if (privdata->host) {
+        conn->name = octstr_format("EMI2:%S:%d:%S", privdata->host, privdata->port,
+                                   privdata->username ? privdata->username : octstr_imm("null"));
+    } else {
+        conn->name = octstr_format("EMI2:localhost:%d:%S", privdata->rport,
+                                   privdata->username ? privdata->username : octstr_imm("null"));
+    }
 
     privdata->shutdown = 0;
 
     for (i = 0; i < EMI2_MAX_TRN; i++)
-	privdata->slots[i].sendtime = 0;
+        privdata->slots[i].sendtime = 0;
     privdata->unacked = 0;
 
     conn->status = SMSCCONN_CONNECTING;
     conn->connect_time = time(NULL);
 
-    if ( privdata->rport > 0 && (privdata->receiver_thread =
-	  gwthread_create(emi2_listener, conn)) == -1)
-	  goto error;
+    if (privdata->rport > 0 && (privdata->receiver_thread = gwthread_create(emi2_listener, conn)) == -1)
+        goto error;
 
-    if ((privdata->sender_thread = gwthread_create(emi2_sender, conn)) == -1) {
-	privdata->shutdown = 1;
-	if (privdata->rport > 0) {
-	    gwthread_wakeup(privdata->receiver_thread);
-	    gwthread_join(privdata->receiver_thread);
-	}
-	goto error;
+    if (privdata->host && (privdata->sender_thread = gwthread_create(emi2_sender, conn)) == -1) {
+        privdata->shutdown = 1;
+        if (privdata->rport > 0) {
+            gwthread_wakeup(privdata->receiver_thread);
+            gwthread_join(privdata->receiver_thread);
+        }
+        goto error;
     }
 
     conn->shutdown = shutdown_cb;
@@ -1816,7 +1842,7 @@ error:
     error(0, "EMI2[%s]: Failed to create emi2 smsc connection",
             (privdata ? octstr_get_cstr(privdata->name) : "-"));
     if (privdata != NULL) {
-	gw_prioqueue_destroy(privdata->outgoing_queue, NULL);
+        gw_prioqueue_destroy(privdata->outgoing_queue, NULL);
     }
     gw_free(privdata);
     octstr_destroy(allow_ip);

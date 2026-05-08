@@ -82,13 +82,13 @@
 #include <sys/socket.h>
 
 #include "gwlib.h"
-#include "gwlib/regex.h"
+#include "gwlib/gw-regex.h"
 
 /* comment this out if you don't want HTTP responses to be dumped */
 #define DUMP_RESPONSE 1
 
 /* define http client connections timeout in seconds (set to -1 for disable) */
-static int http_client_timeout = 240;
+static int http_client_timeout = 30;
 
 /* define http server connections timeout in seconds (set to -1 for disable) */
 #define HTTP_SERVER_TIMEOUT 60
@@ -658,7 +658,7 @@ static FDSet *client_fdset = NULL;
  * Order is sequenced by the enum in the header
  */
 static char *http_methods[] = {
-    "GET", "POST", "HEAD"
+    "GET", "POST", "HEAD", "PUT", "DELETE", "PATCH"
 };
 
 /*
@@ -853,7 +853,7 @@ static void check_pool_conn(Connection *conn, void *data)
         List *list;
         mutex_lock(conn_pool_lock);
         list = dict_get(conn_pool, key);
-        if (gwlist_delete_equal(list, conn) > 0) {
+        if (list != NULL && gwlist_delete_equal(list, conn) > 0) {
             /*
              * ok, connection was still within pool. So it's
              * safe to destroy this connection.
@@ -1029,8 +1029,8 @@ static int response_expectation(int method, int status)
     if (status == HTTP_NO_CONTENT ||
         status == HTTP_NOT_MODIFIED ||
         http_status_class(status) == HTTP_STATUS_PROVISIONAL ||
-        method == HTTP_METHOD_HEAD)
-	return expect_no_body;
+        method == HTTP_METHOD_HEAD || method == HTTP_METHOD_DELETE)
+        return expect_no_body;
     else
         return expect_body;
 }
@@ -1044,8 +1044,10 @@ static void handle_transaction(Connection *conn, void *data)
     
     trans = data;
 
+    gw_assert(trans->conn == conn);
+
     if (run_status != running) {
-        conn_unregister(conn);
+        conn_unregister(trans->conn);
         return;
     }
 
@@ -1086,7 +1088,7 @@ static void handle_transaction(Connection *conn, void *data)
             break;
 
         case reading_entity:
-            ret = entity_read(trans->response, conn);
+            ret = entity_read(trans->response, trans->conn);
             if (ret < 0) {
                 debug("gwlib.http",0,"Failed reading entity");
                 goto error;
@@ -1115,7 +1117,12 @@ static void handle_transaction(Connection *conn, void *data)
         }
     }
 
-    conn_unregister(trans->conn);
+    /*
+     * Connection may have been destroyed within send_request,
+     * so be more carefull here not to panic.
+     */
+    if (trans->conn)
+        conn_unregister(trans->conn);
 
     /* 
      * Take care of persistent connection handling. 
@@ -1218,9 +1225,11 @@ static void handle_transaction(Connection *conn, void *data)
     return;
 
 error:
-    conn_unregister(trans->conn);
-    conn_destroy(trans->conn);
-    trans->conn = NULL;
+    if (trans->conn != NULL) {
+        conn_unregister(trans->conn);
+        conn_destroy(trans->conn);
+        trans->conn = NULL;
+    }
     error(0, "Couldn't fetch <%s>", octstr_get_cstr(trans->url));
     trans->status = -1;
     gwlist_produce(trans->caller, trans);
@@ -1492,6 +1501,12 @@ HTTPURLParse *parse_url(Octstr *url)
         p->user = octstr_copy(url, prefix_len, at2 - prefix_len);
         p->pass = (at2 != at) ? octstr_copy(url, at2 + 1, at - at2 - 1) : NULL;
 
+        /* url-decode user & pass */
+        if (p->user != NULL)
+            octstr_url_decode(p->user);
+        if (p->pass != NULL)
+            octstr_url_decode(p->pass);
+
         if (auth_sep != -1)
             octstr_set_char(url, auth_sep, ':');
   
@@ -1598,7 +1613,7 @@ static int send_request(HTTPServer *trans)
     char buf[128];    
     Octstr *request = NULL;
 
-    if (trans->method == HTTP_METHOD_POST) {
+    if (trans->method == HTTP_METHOD_POST || trans->method == HTTP_METHOD_PATCH || trans->method == HTTP_METHOD_PUT) {
         /* 
          * Add a Content-Length header.  Override an existing one, if
          * necessary.  We must have an accurate one in order to use the
@@ -2211,13 +2226,8 @@ static int parse_request_line(int *method, Octstr **url,
     version = gwlist_get(words, 2);
     gwlist_destroy(words, NULL);
 
-    if (octstr_compare(method_str, octstr_imm("GET")) == 0)
-        *method = HTTP_METHOD_GET;
-    else if (octstr_compare(method_str, octstr_imm("POST")) == 0)
-        *method = HTTP_METHOD_POST;
-    else if (octstr_compare(method_str, octstr_imm("HEAD")) == 0)
-        *method = HTTP_METHOD_HEAD;
-    else
+    *method = http_name2method(method_str);
+    if (*method == -1)
         goto error;
 
     ret = parse_http_version(version);
@@ -2525,59 +2535,47 @@ void http_close_all_ports(void)
 
 
 /*
- * Parse CGI variables from the path given in a GET. Return a list
- * of HTTPCGIvar pointers. Modify the url so that the variables are
- * removed.
+ * Parse CGI variables in <pairs> (query string in url or request body)
+ * Expected format: var1=value1&var2&var3=value3...
+ * Append HTTPCGIvar pointers to supplied list
  */
-static List *parse_cgivars(Octstr *url)
+void parse_cgivars(List *cgivars, Octstr *pairs)
 {
     HTTPCGIVar *v;
-    List *list;
-    int query, et, equals;
-    Octstr *arg, *args;
+    Octstr *pair;
+    long ampersand, equal, start;
+    long pairs_len = octstr_len(pairs);
 
-    query = octstr_search_char(url, '?', 0);
-    if (query == -1)
-        return gwlist_create();
+    for (start = 0; start < pairs_len; start = ampersand + 1) {
+        ampersand = octstr_search_char(pairs, '&', start);
+        if (ampersand == -1)
+            ampersand = pairs_len;
+        pair = octstr_copy(pairs, start, ampersand - start);
 
-    args = octstr_copy(url, query + 1, octstr_len(url));
-    octstr_truncate(url, query);
-
-    list = gwlist_create();
-
-    while (octstr_len(args) > 0) {
-        et = octstr_search_char(args, '&', 0);
-        if (et == -1)
-            et = octstr_len(args);
-        arg = octstr_copy(args, 0, et);
-        octstr_delete(args, 0, et + 1);
-
-        equals = octstr_search_char(arg, '=', 0);
-        if (equals == -1)
-            equals = octstr_len(arg);
+        equal = octstr_search_char(pair, '=', 0);
+        if (equal == -1)
+            equal = octstr_len(pair);
 
         v = gw_malloc(sizeof(HTTPCGIVar));
-        v->name = octstr_copy(arg, 0, equals);
-        v->value = octstr_copy(arg, equals + 1, octstr_len(arg));
+        v->name = octstr_copy(pair, 0, equal);
+        v->value = octstr_copy(pair, equal + 1, octstr_len(pair));
         octstr_url_decode(v->name);
         octstr_url_decode(v->value);
+        gwlist_append(cgivars, v);
 
-        octstr_destroy(arg);
-
-        gwlist_append(list, v);
+        octstr_destroy(pair);
     }
-    octstr_destroy(args);
-
-    return list;
 }
 
 
-HTTPClient *http_accept_request(int port, Octstr **client_ip, Octstr **url, 
-    	    	    	    	List **headers, Octstr **body, 
+HTTPClient *http_accept_request(int port, Octstr **client_ip, Octstr **url,
+                                List **headers, Octstr **body,
                                 List **cgivars)
 {
     HTTPClient *client;
-    
+    Octstr *query, *content_type, *charset;
+    int question_mark;
+
     do {
         client = port_get_request(port);
         if (client == NULL) {
@@ -2591,33 +2589,58 @@ HTTPClient *http_accept_request(int port, Octstr **client_ip, Octstr **url,
             client = NULL;
         }
     } while(client == NULL);
-    
+
+    debug("gwlib.http", 0, "HTTP: Got %s request with url='%s' and body='%s'",
+          http_method2name(client->method), octstr_get_cstr(client->url), octstr_get_cstr(client->request->body));
+
     *client_ip = octstr_duplicate(client->ip);
     *url = client->url;
     *headers = client->request->headers;
     *body = client->request->body;
-    *cgivars = parse_cgivars(client->url);
-    
-    if (client->method != HTTP_METHOD_POST) {
+    *cgivars = gwlist_create();
+
+    /* is there a query string in the url? */
+    question_mark = octstr_search_char(*url, '?', 0);
+    if (question_mark >= 0) {
+        /* parse the query string */
+        query = octstr_copy(*url, question_mark + 1, octstr_len(*url));
+        parse_cgivars(*cgivars, query);
+        octstr_destroy(query);
+
+        /* remove query string from url */
+        octstr_truncate(*url, question_mark);
+    }
+
+    if (client->method == HTTP_METHOD_POST || client->method == HTTP_METHOD_PUT) {
+        if (octstr_len(*body) > 0) {
+            http_header_get_content_type(*headers, &content_type, &charset);
+            if (octstr_str_compare(content_type, "application/x-www-form-urlencoded") == 0) {
+                /* parse the body */
+                parse_cgivars(*cgivars, *body);
+            }
+            octstr_destroy(content_type);
+            octstr_destroy(charset);
+        }
+    } else {
         octstr_destroy(*body);
         *body = NULL;
     }
-    
+
     client->persistent_conn = client_is_persistent(client->request->headers,
                                                    client->use_version_1_0);
-    
+
     client->url = NULL;
     client->request->headers = NULL;
     client->request->body = NULL;
     entity_destroy(client->request);
     client->request = NULL;
-    
+
     return client;
 }
 
 /*
  * The http_send_reply(...) uses this function to determinate the
- * reason pahrase for a status code.
+ * reason phrase for a status code.
  */
 static const char *http_reason_phrase(int status)
 {
@@ -2702,8 +2725,8 @@ void http_send_reply(HTTPClient *client, int status, List *headers,
     	octstr_format_append(response, "%S\r\n", gwlist_get(headers, i));
     octstr_format_append(response, "\r\n");
     
-    if (body != NULL && client->method != HTTP_METHOD_HEAD)
-    	octstr_append(response, body);
+    if (body != NULL && client->method != HTTP_METHOD_HEAD && client->method != HTTP_METHOD_DELETE)
+        octstr_append(response, body);
 	
     ret = conn_write(client->conn, response);
     octstr_destroy(response);
@@ -3641,6 +3664,15 @@ int http_name2method(Octstr *method)
     else if (octstr_str_compare(method, "HEAD") == 0) {
         return HTTP_METHOD_HEAD;
     } 
+    else if (octstr_str_compare(method, "PUT") == 0) {
+        return HTTP_METHOD_PUT;
+    }
+    else if (octstr_str_compare(method, "DELETE") == 0) {
+        return HTTP_METHOD_DELETE;
+    }
+    else if (octstr_str_compare(method, "PATCH") == 0) {
+        return HTTP_METHOD_PATCH;
+    }
 
     return -1;
 }
@@ -3648,7 +3680,7 @@ int http_name2method(Octstr *method)
 
 char *http_method2name(int method)
 {
-    gw_assert(method > 0 && method <= 3);
+    gw_assert(method >= HTTP_METHOD_GET && method <= HTTP_METHOD_PATCH);
 
     return http_methods[method-1];
 }

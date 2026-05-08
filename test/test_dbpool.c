@@ -629,5 +629,9 @@ int main(int argc, char **argv)
     return 0;
 }
 
-
+#else   /* HAVE_DBPOOL */
+int main(int argc, char **argv)
+{
+    return 0;
+}
 #endif /* HAVE_DBPOOL */
