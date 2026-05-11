@@ -389,6 +389,36 @@ Octstr *meta_data_get_value(Octstr *data, const char *group, const Octstr *key)
 }
 
 
+int meta_data_remove_value(Octstr *data, const char *group, const Octstr *key)
+{
+    struct meta_data *mdata, *curr;
+    int ret = 0;
+
+    if (data == NULL || group == NULL || key == NULL)
+        return -1;
+
+    mdata = meta_data_unpack(data);
+    for (curr = mdata; curr != NULL; curr = curr->next) {
+        if (octstr_str_case_compare(curr->group, group) == 0)
+            break;
+    }
+    if (curr == NULL) {
+        meta_data_destroy(mdata);
+        return -1;
+    }
+
+    /* delete value if any */
+    dict_put(curr->values, (Octstr *) key, NULL);
+
+    /* pack it */
+    ret = meta_data_pack(mdata, data);
+
+    meta_data_destroy(mdata);
+
+    return ret;
+}
+
+
 Octstr *meta_data_merge(const Octstr *data, const Octstr *new_data, int replace)
 {
 	Octstr *ret = NULL;

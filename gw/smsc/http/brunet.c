@@ -65,6 +65,16 @@
  */
 
 #include "gwlib/gwlib.h"
+#include "smscconn.h"
+#include "smscconn_p.h"
+#include "bb_smscconn_cb.h"
+#include "msg.h"
+#include "sms.h"
+#include "dlr.h"
+#include "urltrans.h"
+#include "meta_data.h"
+
+#include "../smsc_http_p.h"
 
 
 /* MT related function */

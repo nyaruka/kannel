@@ -70,7 +70,7 @@
 #include <ctype.h>
 
 #include "gwlib/gwlib.h"
-#include "pcre.h"
+#include "gw-pcre.h"
 
 #ifdef HAVE_PCRE
 

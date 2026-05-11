@@ -198,7 +198,8 @@ static void octstr_grow(Octstr *ostr, long size)
 /*
  * Fill is_safe table. is_safe[c] means that c can be left as such when
  * url-encoded.
- * RFC 2396 defines the list of characters that need to be encoded.
+ * RFC 3986 section 2.2 Reserved Characters (January 2005)
+ * defines the list of characters that need to be encoded.
  * Space is treated as an exception by the encoding routine;
  * it's listed as safe here, but is actually changed to '+'.
  */
@@ -206,8 +207,9 @@ static void urlcode_init(void)
 {
     int i;
 
-    unsigned char *safe = " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-                          "abcdefghijklmnopqrstuvwxyz-_.!~*'()";
+    unsigned char *safe = " ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                          "abcdefghijklmnopqrstuvwxyz"
+                          "0123456789-_.~";
     for (i = 0; safe[i] != '\0'; ++i)
         is_safe[safe[i]] = 1;
 }
@@ -1447,7 +1449,7 @@ void octstr_shrink_blanks(Octstr *text)
             j = i = i + 1;
             while (isspace(octstr_get_char(text, j)))
                 j ++;
-            if (j - i > 1)
+            if (j - i > 0)
                 octstr_delete(text, i, j - i);
         }
     }

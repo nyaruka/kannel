@@ -563,7 +563,7 @@ static int X28_reopen_data_link(int oldpadfd ,char* device){
 	
 static int X28_close_send_link(int padfd)
 {
-    char discnntbuff[5];
+    char discnntbuff[6];
     char readbuff[1024];
     char finishconfirm[]="CLR CONF\0";
     int nret = 0, readall = 0;
@@ -579,7 +579,7 @@ static int X28_close_send_link(int padfd)
     if(padfd <= 0)
 	goto datalink_error;
     while((time(NULL) - tstart) < INTERNAL_DISCONNECT_TIMEVAL){
-	nret =write(padfd, discnntbuff, 5);
+	nret =write(padfd, discnntbuff, 6);
 	if(nret == -1){
 	    if(errno == EAGAIN || errno ==EINTR) continue;
 	    else{

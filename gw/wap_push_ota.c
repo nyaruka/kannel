@@ -72,7 +72,7 @@
  * into WSP format and unpacking them from WSP format. This module contains
  * decoding part.
  *
- * By Aarno Syvänen for Wapit Ltd and Global Networks Inc.
+ * By Aarno Syvï¿½nen for Wapit Ltd and Global Networks Inc.
  */
 
 #include <errno.h>
@@ -113,8 +113,8 @@ static BearerboxAddress *bearerbox = NULL;
 
 static List *ota_queue = NULL;
 
-wap_dispatch_func_t *dispatch_to_wsp;
-wap_dispatch_func_t *dispatch_to_wsp_unit;
+static wap_dispatch_func_t *dispatch_to_wsp;
+static wap_dispatch_func_t *dispatch_to_wsp_unit;
 
 /**************************************************************************
  *

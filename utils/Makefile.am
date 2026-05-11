@@ -6,26 +6,26 @@ sbin_PROGRAMS = run_kannel_box
 man1_MANS = seewbmp.1 mtbatch.1
 man8_MANS = run_kannel_box.8
 
-seewbmp_LDADD = $(top_builddir)/libgwlib.a $(top_builddir)/libgw.a
+seewbmp_LDADD = $(top_builddir)/gwlib/libgwlib.la $(top_builddir)/gw/libgw.la
 seewbmp_SOURCES = \
 		seewbmp.c
 
-mtbatch_LDADD = $(top_builddir)/libgwlib.a $(top_builddir)/libgw.a
+mtbatch_LDADD = $(top_builddir)/gwlib/libgwlib.la $(top_builddir)/gw/libgw.la
 mtbatch_SOURCES = \
 		mtbatch.c
 
-decode_emimsg_LDADD = $(top_builddir)/libgwlib.a $(top_builddir)/libgw.a
+decode_emimsg_LDADD = $(top_builddir)/gwlib/libgwlib.la $(top_builddir)/gw/libgw.la
 decode_emimsg_SOURCES = \
 		decode_emimsg.c
 
-run_kannel_box_LDADD = $(top_builddir)/libgwlib.a $(top_builddir)/libgw.a
+run_kannel_box_LDADD = $(top_builddir)/gwlib/libgwlib.la $(top_builddir)/gw/libgw.la
 run_kannel_box_SOURCES = \
 		run_kannel_box.c
 
 if BUILD_STARTSTOPDAEMON
 
 sbin_PROGRAMS += start-stop-daemon
-start_stop_daemon_LDADD = $(top_builddir)/libgwlib.a $(top_builddir)/libgw.a
+start_stop_daemon_LDADD = $(top_builddir)/gwlib/libgwlib.la $(top_builddir)/gw/libgw.la
 start_stop_daemon_SOURCES = \
 		start-stop-daemon.c
 

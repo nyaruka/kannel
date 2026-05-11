@@ -62,7 +62,7 @@
 
 #include "wap_push_ppg_pushuser.h"
 #include "numhash.h"
-#include "gwlib/regex.h"
+#include "gwlib/gw-regex.h"
 
 /***************************************************************************
  *

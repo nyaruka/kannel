@@ -313,7 +313,7 @@ static Octstr *get_msg_filename(const Octstr *dir_s, const Octstr *hash, const O
 
     	if (octstr_ncompare(fname, hash, OUR_DIGEST_LEN) == 0) {
     		Octstr *addr;
-    		long addr_len, pos;
+    		long addr_len = 0, pos = 0;
 
     		/* this is a candidate */
     		if (dst == NULL)
@@ -404,6 +404,7 @@ static void dlr_spool_add(struct dlr_entry *dlr)
         error(errno, "Could not create directory `%s'.", octstr_get_cstr(dir));
         octstr_destroy(dir);
         octstr_destroy(hash);
+        msg_destroy(msg);
         return;
     }
 
@@ -424,6 +425,7 @@ static void dlr_spool_add(struct dlr_entry *dlr)
     if ((fd = open(octstr_get_cstr(filename), O_CREAT|O_EXCL|O_WRONLY, S_IRUSR|S_IWUSR)) == -1) {
         error(errno, "Could not open file `%s'.", octstr_get_cstr(filename));
         octstr_destroy(filename);
+        msg_destroy(msg);
         return;
     }
 
@@ -457,7 +459,7 @@ static void dlr_spool_add(struct dlr_entry *dlr)
 static struct dlr_entry *dlr_spool_get(const Octstr *smsc, const Octstr *ts, const Octstr *dst)
 {
     struct dlr_entry *ret = NULL;
-    Octstr *os, *hash, *dir, *filename = NULL;
+    Octstr *os, *dst_min, *hash, *dir, *filename = NULL;
     Msg *msg;
 
     /* determine target dir and filename via hash */
@@ -470,7 +472,11 @@ static struct dlr_entry *dlr_spool_get(const Octstr *smsc, const Octstr *ts, con
 	dir = octstr_format("%S/%ld", spool_dir, octstr_hash_key(hash) % MAX_DIRS);
 
 	/* get content of msg surrogate */
-	os = get_msg_surrogate(dir, hash, dst, &filename);
+    dst_min = octstr_duplicate(dst);
+    if (dst_min)
+        octstr_binary_to_hex(dst_min, 0);
+	os = get_msg_surrogate(dir, hash, dst_min, &filename);
+	octstr_destroy(dst_min);
     octstr_destroy(dir);
     octstr_destroy(hash);
 

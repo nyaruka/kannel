@@ -206,7 +206,7 @@ void bb_smscconn_killed(void)
 }
 
 
-static void handle_split(SMSCConn *conn, Msg *msg, long reason)
+static void handle_split(SMSCConn *conn, Msg *msg, long reason, Octstr *reply)
 {
     struct split_parts *split = msg->sms.split_parts;
     
@@ -266,12 +266,14 @@ static void handle_split(SMSCConn *conn, Msg *msg, long reason)
         msg = split->orig;
         msg->sms.split_parts = NULL;
         if (split->status == SMSCCONN_SUCCESS)
-            bb_smscconn_sent(conn, msg, NULL);
+            bb_smscconn_sent(conn, msg, reply);
         else {
             debug("bb.sms.splits", 0, "Parts of concatenated message failed.");
-            bb_smscconn_send_failed(conn, msg, split->status, NULL);
+            bb_smscconn_send_failed(conn, msg, split->status, reply);
         }
         gw_free(split);
+    } else {
+        octstr_destroy(reply);
     }
 }
 
@@ -279,8 +281,7 @@ static void handle_split(SMSCConn *conn, Msg *msg, long reason)
 void bb_smscconn_sent(SMSCConn *conn, Msg *sms, Octstr *reply)
 {
     if (sms->sms.split_parts != NULL) {
-        handle_split(conn, sms, SMSCCONN_SUCCESS);
-        octstr_destroy(reply);
+        handle_split(conn, sms, SMSCCONN_SUCCESS, reply);
         return;
     }
 
@@ -328,8 +329,7 @@ void bb_smscconn_sent(SMSCConn *conn, Msg *sms, Octstr *reply)
 void bb_smscconn_send_failed(SMSCConn *conn, Msg *sms, int reason, Octstr *reply)
 {
     if (sms->sms.split_parts != NULL) {
-        handle_split(conn, sms, reason);
-        octstr_destroy(reply);
+        handle_split(conn, sms, reason, reply);
         return;
     }
     
@@ -392,16 +392,15 @@ void bb_smscconn_send_failed(SMSCConn *conn, Msg *sms, int reason, Octstr *reply
         }
 
         /* generate relay confirmancy message */
-        if (DLR_IS_SMSC_FAIL(sms->sms.dlr_mask) ||
-	    DLR_IS_FAIL(sms->sms.dlr_mask)) {
+        if (DLR_IS_SMSC_FAIL(sms->sms.dlr_mask) || DLR_IS_FAIL(sms->sms.dlr_mask)) {
             Msg *dlrmsg;
 
-	    if (reply == NULL)
-	        reply = octstr_create("");
+            if (reply == NULL)
+                reply = octstr_create("");
 
-	    octstr_insert_data(reply, 0, "NACK/", 5);
+            octstr_insert_data(reply, 0, "NACK/", 5);
             dlrmsg = create_dlr_from_msg((conn ? (conn->id?conn->id:conn->name) : NULL), sms,
-	                                 reply, DLR_SMSC_FAIL);
+                                         reply, DLR_SMSC_FAIL);
             if (dlrmsg != NULL) {
                 bb_smscconn_receive(conn, dlrmsg);
             }
@@ -755,26 +754,27 @@ static int cmp_rout_grp_checksum(void *a, void *b)
 	SMSCConn *conn = a;
 	Octstr *os;
 
-	os = cfg_get_group_checksum((CfgGroup*)b,
-		    OCTSTR(denied-smsc-id),
-		    OCTSTR(allowed-smsc-id),
-		    OCTSTR(preferred-smsc-id),
-		    OCTSTR(allowed-prefix),
-		    OCTSTR(denied-prefix),
-		    OCTSTR(preferred-prefix),
-		    OCTSTR(unified-prefix),
-		    OCTSTR(reroute),
-		    OCTSTR(reroute-smsc-id),
-		    OCTSTR(reroute-receiver),
-		    OCTSTR(reroute-dlr),
-		    OCTSTR(allowed-smsc-id-regex),
-		    OCTSTR(denied-smsc-id-regex),
-		    OCTSTR(preferred-smsc-id-regex),
-		    OCTSTR(allowed-prefix-regex),
-		    OCTSTR(denied-prefix-regex),
-		    OCTSTR(preferred-prefix-regex),
-		    NULL
-	);
+    os = cfg_get_group_checksum((CfgGroup*)b,
+            OCTSTR(denied-smsc-id),
+            OCTSTR(allowed-smsc-id),
+            OCTSTR(preferred-smsc-id),
+            OCTSTR(allowed-prefix),
+            OCTSTR(denied-prefix),
+            OCTSTR(preferred-prefix),
+            OCTSTR(unified-prefix),
+            OCTSTR(reroute),
+            OCTSTR(reroute-smsc-id),
+            OCTSTR(reroute-receiver),
+            OCTSTR(reroute-receiver-regex),
+            OCTSTR(reroute-dlr),
+            OCTSTR(allowed-smsc-id-regex),
+            OCTSTR(denied-smsc-id-regex),
+            OCTSTR(preferred-smsc-id-regex),
+            OCTSTR(allowed-prefix-regex),
+            OCTSTR(denied-prefix-regex),
+            OCTSTR(preferred-prefix-regex),
+            NULL
+    );
 
 	ret = (octstr_compare(conn->chksum_conn, os) == 0);
 	octstr_destroy(os);
@@ -1092,9 +1092,9 @@ int smsc2_remove_smsc(Octstr *id)
     gw_rwlock_wrlock(&smsc_list_lock);
 
     gwlist_add_producer(smsc_list);
-    while((i = smsc2_find(id, ++i)) != -1) {
+    while ((i = smsc2_find(id, ++i)) != -1) {
         conn = gwlist_get(smsc_list, i);
-        gwlist_delete(smsc_list, i, 1);
+        gwlist_delete(smsc_list, i--, 1);
         smscconn_shutdown(conn, 0);
         smscconn_destroy(conn);
         success = 1;
@@ -1112,9 +1112,9 @@ int smsc2_remove_smsc(Octstr *id)
 int smsc2_add_smsc(Octstr *id)
 {
     CfgGroup *grp;
-    SMSCConn *conn;
+    SMSCConn *conn = NULL;
     Octstr *smscid = NULL;
-    long i;
+    long i, m, j;
     int success = 0;
 
     if (!smsc_running)
@@ -1141,18 +1141,26 @@ int smsc2_add_smsc(Octstr *id)
             smscid = cfg_get(grp, octstr_imm("smsc-id"));
 
         if (smscid != NULL && octstr_compare(smscid, id) == 0) {
-            conn = smscconn_create(grp, 1);
-            if (conn != NULL) {
-                gwlist_append(smsc_list, conn);
-                if (conn->dead_start) {
-                    /* Shutdown connection if it's not configured to connect at start-up time */
-                    smscconn_shutdown(conn, 0);
+            /* multiple instances for the same group? */
+            m = smscconn_instances(grp);
+            for (j = 0; j < m; j++) {
+                conn = smscconn_create(grp, 1);
+                if (conn != NULL) {
+                    gwlist_append(smsc_list, conn);
+                    if (conn->dead_start) {
+                        /* Shutdown connection if it's not configured to connect at start-up time */
+                        smscconn_shutdown(conn, 0);
+                    } else {
+                        smscconn_start(conn);
+                    }
+                    success = 1;
                 } else {
-                    smscconn_start(conn);
+                    error(0, "Cannot start with SMSC %s connection failing", octstr_get_cstr(id));
                 }
-                success = 1;
             }
         }
+        octstr_destroy(smscid);
+        smscid = NULL;
     }
     gwlist_remove_producer(smsc_list);
     gw_rwlock_unlock(&smsc_list_lock);
@@ -1519,7 +1527,7 @@ Octstr *smsc2_status(int status_type)
 }
 
 
-int smsc2_graceful_restart(void)
+int smsc2_graceful_restart(Cfg *cfg)
 {
     CfgGroup *grp;
     SMSCConn *conn;
@@ -1533,10 +1541,8 @@ int smsc2_graceful_restart(void)
     gw_rwlock_wrlock(&smsc_list_lock);
 
     /* load the smsc groups from the config resource */
-    if (bb_reload_smsc_groups() != 0) {
-        gw_rwlock_unlock(&smsc_list_lock);
-        return -1;
-    }
+    gwlist_destroy(smsc_groups, NULL);
+    smsc_groups = cfg_get_multi_group(cfg, octstr_imm("smsc"));
 
     /* List of SMSCConn that we keep running */
     keep = gwlist_create();
@@ -1964,10 +1970,31 @@ static long route_incoming_to_smsc(SMSCConn *conn, Msg *msg)
         msg->sms.sms_type = mt_push;
         store_save(msg);
         /* route by receiver number */
-        /* XXX implement wildcard matching too! */
         octstr_destroy(msg->sms.smsc_id);
         msg->sms.smsc_id = octstr_duplicate(smsc);
         return smsc2_rout(msg, 0);
+    }
+
+    if (conn->reroute_by_receiver_regex && msg->sms.receiver) {
+        int i, l;
+        pattern_route *r;
+
+        l = gwlist_len(conn->reroute_by_receiver_regex);
+        for (i = 0; i < l; i++) {
+            r = gwlist_get(conn->reroute_by_receiver_regex, i);
+            /* match against regex pattern */
+            if (r != NULL && r->re != NULL &&
+                    gw_regex_match_pre(r->re, msg->sms.receiver) == 1) {
+                /* matched, change message direction */
+                store_save_ack(msg, ack_success);
+                msg->sms.sms_type = mt_push;
+                store_save(msg);
+                /* route by receiver number */
+                octstr_destroy(msg->sms.smsc_id);
+                msg->sms.smsc_id = octstr_duplicate(r->id);
+                return smsc2_rout(msg, 0);
+            }
+        }
     }
 
     return -1; 

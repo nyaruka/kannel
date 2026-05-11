@@ -61,8 +61,8 @@
  */
 
 
-#ifndef SEMAPHORE_H
-#define SEMAPHORE_H
+#ifndef GW_SEMAPHORE_H
+#define GW_SEMAPHORE_H
 
 
 typedef struct Semaphore Semaphore;

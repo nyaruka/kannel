@@ -65,7 +65,7 @@
 #include <signal.h>
 
 #include "gwlib/gwlib.h"
-#include "gwlib/regex.h"
+#include "gwlib/gw-regex.h"
 
 #if defined(HAVE_REGEX) || defined(HAVE_PCRE)
 

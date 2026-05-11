@@ -218,12 +218,54 @@ static int redis_check_conn(void *conn)
     }
 
     error(0, "REDIS: server connection check failed!");
-    error(0, "REDIS: %s", ((redisContext*)conn)->errstr);
+    if (((redisContext*)conn)->err != 0) {
+        /* error occured */
+        error(0, "REDIS: %s", ((redisContext*)conn)->errstr);
+    } else if (reply != NULL) {
+        /* some strange reply ? */
+        error(0, "REDIS REPLY: %s", reply->str);
+    }
     if (reply != NULL)
         freeReplyObject(reply);
     return -1;
 }
 
+static List *redis_populate_array(redisReply *reply)
+{
+    long i;
+    List *row;
+    Octstr *temp = NULL;
+
+    gw_assert(reply->type == REDIS_REPLY_ARRAY);
+
+    row = gwlist_create();
+    for (i = 0; i < reply->elements; i++) {
+        switch(reply->element[i]->type) {
+            case REDIS_REPLY_NIL:
+                gwlist_produce(row, octstr_imm(""));
+                break;
+            case REDIS_REPLY_ARRAY: {
+                List *arr;
+                arr = redis_populate_array(reply->element[i]);
+                gwlist_append(row, arr);
+                break;
+            }
+            default:
+                if (reply->element[i]->str == NULL || reply->element[i]->len == 0) {
+                    gwlist_produce(row, octstr_imm(""));
+                } else {
+                    temp = octstr_create_from_data(reply->element[i]->str, reply->element[i]->len);
+#if defined(REDIS_DEBUG)
+                    debug("dbpool.redis",0,"Received REDIS_REPLY_ARRAY[%ld]: %s", i, octstr_get_cstr(temp));
+#endif
+                    gwlist_append(row, temp);
+                }
+                break;
+        }
+    }
+
+    return row;
+}
 
 static int redis_select(void *conn, const Octstr *sql, List *binds, List **res)
 {
@@ -315,30 +357,16 @@ static int redis_select(void *conn, const Octstr *sql, List *binds, List **res)
             gwlist_produce(*res, row);
             freeReplyObject(reply);
             return 0;
-            break;
 
         case REDIS_REPLY_ARRAY:
 #if defined(REDIS_DEBUG)
             debug("dbpool.redis",0,"Received REDIS_REPLY_ARRAY");
 #endif
             *res = gwlist_create();
-            row = gwlist_create();
-            for (i = 0; i < reply->elements; i++) {
-                if (reply->element[i]->type == REDIS_REPLY_NIL ||
-                        reply->element[i]->str == NULL || reply->element[i]->len == 0) {
-                    gwlist_produce(row, octstr_imm(""));
-                    continue;
-                }
-                temp = octstr_create_from_data(reply->element[i]->str, reply->element[i]->len);
-#if defined(REDIS_DEBUG)
-                debug("dbpool.redis",0,"Received REDIS_REPLY_ARRAY[%ld]: %s", i, octstr_get_cstr(temp));
-#endif
-                gwlist_append(row, temp);
-            }
+            row = redis_populate_array(reply);
             gwlist_produce(*res, row);
             freeReplyObject(reply);
             return 0;
-            break;
 
         default:
 #if defined(REDIS_DEBUG)
@@ -432,7 +460,6 @@ static int redis_update(void *conn, const Octstr *sql, List *binds)
             ret = (int)reply->integer;
             freeReplyObject(reply);
             return ret;
-            break;
         case REDIS_REPLY_ARRAY:
             /* The EXEC command returns an array of replies
              * when executed successfully */
@@ -443,7 +470,6 @@ static int redis_update(void *conn, const Octstr *sql, List *binds)
             /* For now, we only support EXEC commands with an array
              * return and in that case, all is well */
             return 0;
-            break;
         case REDIS_REPLY_NIL:
             /* Finally, the EXEC command can return a NULL
              * if it fails (e.g. due to a WATCH triggering */

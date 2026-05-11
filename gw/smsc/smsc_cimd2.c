@@ -1976,7 +1976,7 @@ static int cimd2_submit_msg(SMSCConn *conn, Msg *msg)
 
     ret = cimd2_request(packet, conn, &ts);
     if ((ret == 0) && (ts) && DLR_IS_SUCCESS_OR_FAIL(msg->sms.dlr_mask) && !pdata->no_dlr) {
-        dlr_add(conn->name, ts, msg, 1);
+        dlr_add(conn->id, ts, msg, 1);
     }
     octstr_destroy(ts);
     packet_destroy(packet);
@@ -2116,7 +2116,7 @@ static Msg *cimd2_accept_delivery_report_message(struct packet *request,
         code = 0;
     }
     if(code)
-        msg = dlr_find(conn->name, timestamp, destination, code, 1);
+        msg = dlr_find(conn->id, timestamp, destination, code, 1);
     else
         msg = NULL;
 

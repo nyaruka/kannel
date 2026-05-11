@@ -200,9 +200,12 @@ enum {
  * probably should be.
  */
 enum {
-	HTTP_METHOD_GET = 1,
+	HTTP_METHOD_GET  = 1,
 	HTTP_METHOD_POST = 2,
-	HTTP_METHOD_HEAD = 3
+	HTTP_METHOD_HEAD = 3,
+	HTTP_METHOD_PUT  = 4,
+	HTTP_METHOD_DELETE = 5,
+    HTTP_METHOD_PATCH  = 6,
 };
 
 /*
@@ -267,6 +270,14 @@ HTTPURLParse *parse_url(Octstr *url);
  * Dump the parsed struct to debug log level. 
  */
 void parse_dump(HTTPURLParse *p);
+
+/*
+ * Parse CGI variables in <pairs> (query string in url or request body)
+ * Expected format: var1=value1&var2&var3=value3...
+ * Append HTTPCGIvar pointers to supplied list
+ */
+void parse_cgivars(List *cgivars, Octstr *pairs);
+
 
 
 /***********************************************************************

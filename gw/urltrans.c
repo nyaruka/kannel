@@ -109,6 +109,8 @@ struct URLTranslation {
     Octstr *username;	/* send sms username */
     Octstr *password;	/* password associated */
     Octstr *forced_smsc;/* if smsc id is forcet to certain for this user */
+    long forced_priority; /* define a fixed priority value for this user */
+    long max_priority;    /* define a maximum priority value for this user */
     Octstr *default_smsc; /* smsc id if none given in http send-sms request */
     Octstr *allow_ip;	/* allowed IPs to request send-sms with this 
     	    	    	   account */
@@ -508,7 +510,7 @@ Octstr *urltrans_fill_escape_codes(Octstr *pattern, Msg *request)
 
     case 'n':
         if (request->sms.service == NULL)
-        break;
+            break;
         enc = octstr_duplicate(request->sms.service);
         octstr_url_encode(enc);
         octstr_append(result, enc);
@@ -640,12 +642,21 @@ Octstr *urltrans_fill_escape_codes(Octstr *pattern, Msg *request)
         octstr_format_append(result, "%ld", request->sms.time);
         break;
 
-    case 'u':
+    case 'u': /* UDH, URL-encoded */
         if(octstr_len(request->sms.udhdata)) {
-        enc = octstr_duplicate(request->sms.udhdata);
-        octstr_url_encode(enc);
-        octstr_append(result, enc);
-        octstr_destroy(enc);
+            enc = octstr_duplicate(request->sms.udhdata);
+            octstr_url_encode(enc);
+            octstr_append(result, enc);
+            octstr_destroy(enc);
+        }
+        break;
+
+    case 'U': /* UDH, printable hexadecimal byte codes */
+        if(octstr_len(request->sms.udhdata)) {
+            enc = octstr_duplicate(request->sms.udhdata);
+            octstr_binary_to_hex(enc, 1);
+            octstr_append(result, enc);
+            octstr_destroy(enc);
         }
         break;
 
@@ -660,7 +671,24 @@ Octstr *urltrans_fill_escape_codes(Octstr *pattern, Msg *request)
             octstr_format_append(result, "%ld", (request->sms.deferred - time(NULL)) / 60);
         }
         break;
-    
+
+    case 'y':   /* message priority */
+        enc = octstr_create("");
+        octstr_append_decimal(enc, request->sms.priority);
+        octstr_url_encode(enc);
+        octstr_append(result, enc);
+        octstr_destroy(enc);
+        break;
+
+    case 'x':  /* smsbox-id */
+        if (octstr_len(request->sms.boxc_id)) {
+            enc = octstr_duplicate(request->sms.boxc_id);
+            octstr_url_encode(enc);
+            octstr_append(result, enc);
+            octstr_destroy(enc);
+        }
+        break;
+
     /*
      * This allows to pass meta-data individual parameters into urls.
      * The syntax is as follows: %#group#parameter#
@@ -869,9 +897,19 @@ Octstr *urltrans_allowed_prefix(URLTranslation *t)
     return t->allowed_prefix;
 }
 
+regex_t *urltrans_allowed_prefix_regex(URLTranslation *t)
+{
+    return t->allowed_prefix_regex;
+}
+
 Octstr *urltrans_denied_prefix(URLTranslation *t) 
 {
     return t->denied_prefix;
+}
+
+regex_t *urltrans_denied_prefix_regex(URLTranslation *t)
+{
+    return t->denied_prefix_regex;
 }
 
 Octstr *urltrans_allowed_recv_prefix(URLTranslation *t) 
@@ -932,6 +970,16 @@ Octstr *urltrans_dlr_url(URLTranslation *t)
 int urltrans_dlr_mask(URLTranslation *t)
 {
     return t->dlr_mask;
+}
+
+int urltrans_forced_priority(URLTranslation *t)
+{
+    return t->forced_priority;
+}
+
+int urltrans_max_priority(URLTranslation *t)
+{
+    return t->max_priority;
 }
 
 
@@ -1151,6 +1199,8 @@ static URLTranslation *create_onetrans(CfgGroup *grp)
 	ot->username = cfg_get(grp, octstr_imm("username"));
 	ot->password = cfg_get(grp, octstr_imm("password"));
 	ot->dlr_url = cfg_get(grp, octstr_imm("dlr-url"));
+    if (cfg_get_integer(&ot->dlr_mask, grp, octstr_imm("dlr-mask")) == -1)
+         ot->dlr_mask = DLR_UNDEFINED;
 	grp_dump(grp);
 	if (ot->password == NULL) {
 	    error(0, "Password required for send-sms user");
@@ -1217,7 +1267,7 @@ static URLTranslation *create_onetrans(CfgGroup *grp)
     }
 
     if (cfg_get_integer(&ot->max_messages, grp, octstr_imm("max-messages")) == -1)
-	ot->max_messages = 1;
+        ot->max_messages = 1;
     cfg_get_bool(&ot->concatenation, grp, octstr_imm("concatenation"));
     cfg_get_bool(&ot->omit_empty, grp, octstr_imm("omit-empty"));
     
@@ -1228,16 +1278,36 @@ static URLTranslation *create_onetrans(CfgGroup *grp)
     ot->split_suffix = cfg_get(grp, octstr_imm("split-suffix"));
 
     if ( (ot->prefix == NULL && ot->suffix != NULL) ||
-	 (ot->prefix != NULL && ot->suffix == NULL) ) {
-	warning(0, "Service : suffix and prefix are only used"
-		   " if both are set.");
+            (ot->prefix != NULL && ot->suffix == NULL) ) {
+        warning(0, "Service : suffix and prefix are only used if both are set.");
     }
     if ((ot->prefix != NULL || ot->suffix != NULL) &&
-        ot->type != TRANSTYPE_GET_URL) {
-	warning(0, "Service : suffix and prefix are only used"
-                   " if type is 'get-url'.");
+            ot->type != TRANSTYPE_GET_URL) {
+        warning(0, "Service : suffix and prefix are only used if type is 'get-url'.");
     }
     
+    if (cfg_get_integer(&ot->forced_priority, grp, octstr_imm("forced-priority")) == -1) {
+        ot->forced_priority = SMS_PARAM_UNDEFINED;
+    } else {
+        if (ot->forced_priority < 0 || ot->forced_priority > 3) {
+            error(0, "Unsupported value 'forced-priority = %ld' for send-sms user %s,"
+                     " allowed range is (0..3).",
+                  ot->forced_priority, octstr_get_cstr(ot->username));
+            goto error;
+        }
+    }
+
+    if (cfg_get_integer(&ot->max_priority, grp, octstr_imm("max-priority")) == -1) {
+        ot->max_priority = SMS_PARAM_UNDEFINED;
+    } else {
+        if (ot->max_priority < 0 || ot->max_priority > 3) {
+            error(0, "Unsupported value 'max-priority = %ld' for send-sms user %s,"
+                     " allowed range is (0..3).",
+                  ot->max_priority, octstr_get_cstr(ot->username));
+            goto error;
+        }
+    }
+
     return ot;
 
 error:

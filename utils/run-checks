@@ -8,7 +8,7 @@ rm -f check.log check.log.new
 for prog in "$@"
 do
 	echo -n "Check: $prog..."
-        $prog 2> check.log.new
+        $(dirname $0)/../checks/$prog 2> check.log.new
 	if test ! -s check.log.new
 	then
 		echo " OK."

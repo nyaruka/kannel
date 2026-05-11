@@ -66,6 +66,10 @@
 #include "gw-timer.h"
 
 /*
+#define LOCK_DEBUG 1
+*/
+
+/*
  * Active timers are stored in a TimerHeap.  It is a partially ordered
  * array.  Each element i is the child of element i/2 (rounded down),
  * and a child never elapses before its parent.  The result is that
@@ -168,11 +172,20 @@ static void heap_delete(TimerHeap *heap, long index);
 static int heap_adjust(TimerHeap *heap, long index);
 static void heap_insert(TimerHeap *heap, Timer *timer);
 static void heap_swap(TimerHeap *heap, long index1, long index2);
-static void lock(Timerset *set);
-static void unlock(Timerset *set);
 static void watch_timers(void *arg);   /* The timer thread */
 static void elapse_timer(Timer *timer);
 
+#ifdef LOCK_DEBUG
+static void lock_real(Timerset *set, const char *file, long line, const char *func);
+#define lock(ts) \
+    lock_real(ts, __FILE__, __LINE__, __func__)
+static void unlock_real(Timerset *set, const char *file, long line, const char *func);
+#define unlock(ts) \
+    unlock_real(ts, __FILE__, __LINE__, __func__)
+#else
+static void lock(Timerset *set);
+static void unlock(Timerset *set);
+#endif
 
 Timerset *gw_timerset_create(void)
 {
@@ -207,6 +220,37 @@ void gw_timerset_destroy(Timerset *set)
     gw_free(set);
 }
 
+void gw_timerset_elapsed_destroy(Timerset *set)
+{
+    if (set == NULL)
+        return;
+
+    /* Stop all timers. */
+    while (set->heap->len > 0)
+        gw_timer_elapsed_destroy(set->heap->tab[0]);
+
+    /* Kill timer thread */
+    set->stopping = 1;
+    gwthread_wakeup(set->thread);
+    gwthread_join(set->thread);
+
+    /* Free resources */
+    heap_destroy(set->heap);
+    mutex_destroy(set->mutex);
+    gw_free(set);
+}
+
+
+long gw_timerset_count(Timerset *set)
+{
+    long ret;
+
+    lock(set);
+    ret = set->heap->len;
+    unlock(set);
+
+    return ret;
+}
 
 Timer *gw_timer_create(Timerset *set, List *outputlist, void (*callback) (void*))
 {
@@ -243,6 +287,17 @@ void gw_timer_elapsed_destroy(Timer *timer)
         return;
 
     gw_timer_elapsed_stop(timer);
+    if (timer->output != NULL)
+        gwlist_remove_producer(timer->output);
+    gw_free(timer);
+}
+
+void gw_timer_elapsed_destroy_cb(Timer *timer)
+{
+    if (timer == NULL)
+        return;
+
+    gw_timer_elapsed_stop_cb(timer);
     if (timer->output != NULL)
         gwlist_remove_producer(timer->output);
     gw_free(timer);
@@ -341,6 +396,49 @@ void gw_timer_elapsed_start(Timer *timer, int interval, void *data)
         gwthread_wakeup(timer->timerset->thread);
 }
 
+void gw_timer_elapsed_start_cb(Timer *timer, int interval, void *data)
+{
+    int wakeup = 0;
+
+    gw_assert(timer != NULL);
+
+    if (timer == NULL)
+        return;
+
+    /* Convert to absolute time */
+    interval += time(NULL);
+
+    if (timer->elapses > 0) {
+        /* Resetting an existing timer.  Move it to its new
+         * position in the heap. */
+        if (interval < timer->elapses && timer->index == 0)
+            wakeup = 1;
+        timer->elapses = interval;
+        gw_assert(timer->index >= 0);
+        gw_assert(timer->timerset->heap->tab[timer->index] == timer);
+        wakeup |= heap_adjust(timer->timerset->heap, timer->index);
+    } else {
+        /* Setting a new timer, or resetting an elapsed one.
+         * There should be no further elapse event on the
+         * output list here. */
+        /* abort_elapsed(timer); */
+        timer->elapsed_data = NULL;
+
+        /* Then activate the timer. */
+        timer->elapses = interval;
+        gw_assert(timer->index < 0);
+        heap_insert(timer->timerset->heap, timer);
+        wakeup = timer->index == 0;  /* Do we have a new top? */
+    }
+
+    if (data != NULL) {
+        timer->data = data;
+    }
+
+    if (wakeup)
+        gwthread_wakeup(timer->timerset->thread);
+}
+
 void gw_timer_stop(Timer *timer)
 {
     gw_assert(timer != NULL);
@@ -380,6 +478,24 @@ void gw_timer_elapsed_stop(Timer *timer)
 	timer->elapsed_data = NULL;
 
     unlock(timer->timerset);
+}
+
+void gw_timer_elapsed_stop_cb(Timer *timer)
+{
+    gw_assert(timer != NULL);
+
+    /*
+     * If the timer is active, make it inactive and remove it from
+     * the heap.
+     */
+    if (timer->elapses > 0) {
+        timer->elapses = -1;
+        gw_assert(timer->timerset->heap->tab[timer->index] == timer);
+        heap_delete(timer->timerset->heap, timer->index);
+    }
+
+    /* abort_elapsed(timer); */
+    timer->elapsed_data = NULL;
 }
 
 List *gw_timer_break(Timerset *set)
@@ -426,6 +542,24 @@ void *gw_timer_data(Timer *timer)
     return timer->data;
 }
 
+#ifdef LOCK_DEBUG
+
+static void lock_real(Timerset *set, const char *file, long line, const char *func)
+{
+    gw_assert(set != NULL);
+    mutex_lock(set->mutex);
+    debug("gw-timer",0, "timerset lock from %s:%ld:%s", file, line, func);
+}
+
+static void unlock_real(Timerset *set, const char *file, long line, const char *func)
+{
+    gw_assert(set != NULL);
+    mutex_unlock(set->mutex);
+    debug("gw-timer",0, "timerset unlock from %s:%ld:%s", file, line, func);
+}
+
+#else
+
 static void lock(Timerset *set)
 {
     gw_assert(set != NULL);
@@ -437,6 +571,8 @@ static void unlock(Timerset *set)
     gw_assert(set != NULL);
     mutex_unlock(set->mutex);
 }
+
+#endif
 
 /*
  * Go back and remove this timer's elapse event from the output list,

@@ -95,6 +95,8 @@ typedef struct Timerset Timerset;
 
 Timerset *gw_timerset_create(void);
 void gw_timerset_destroy(Timerset *set);
+void gw_timerset_elapsed_destroy(Timerset *set);
+long gw_timerset_count(Timerset *set);
 
 
 /*
@@ -110,9 +112,14 @@ Timer *gw_timer_create(Timerset *set, List *outputlist, void (*callback) (void*)
  * (The _elapsed_ variant assumes that there can't be any further events
  * within the output list for this timer, which reduces the need to
  * traverse the output list and delete the corresponding events.)
+ *
+ * (The _destroy_cb variant MUST be used for callback'ed time events, as
+ * it will not try to lock the Timerset again, being already locked.)
  */
 void gw_timer_destroy(Timer *timer);
 void gw_timer_elapsed_destroy(Timer *timer);
+void gw_timer_elapsed_destroy_cb(Timer *timer);
+
 
 /*
  * Make the timer elapse after 'interval' seconds, at which time it
@@ -134,6 +141,8 @@ void gw_timer_elapsed_destroy(Timer *timer);
  */
 void gw_timer_start(Timer *timer, int interval, void *data);
 void gw_timer_elapsed_start(Timer *timer, int interval, void *data);
+void gw_timer_elapsed_start_cb(Timer *timer, int interval, void *data);
+
 
 /*
  * Stop this timer.  If it has already elapsed, try to remove its
@@ -142,9 +151,13 @@ void gw_timer_elapsed_start(Timer *timer, int interval, void *data);
  * (The _elapsed_ variant assumes that there can't be any further events
  * within the output list for this timer, which reduces the need to
  * traverse the output list and delete the corresponding events.)
+ *
+ * (The _destroy_cb variant MUST be used for callback'ed time events, as
+ * it will not try to lock the Timerset again, being already locked.)
  */
 void gw_timer_stop(Timer *timer);
 void gw_timer_elapsed_stop(Timer *timer);
+void gw_timer_elapsed_stop_cb(Timer *timer);
 
 /*
  * Stop all active timers, elapsed or not, and return them via the

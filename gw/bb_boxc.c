@@ -111,6 +111,7 @@ static Dict *smsbox_by_id;
 static Dict *smsbox_by_smsc;
 static Dict *smsbox_by_receiver;
 static Dict *smsbox_by_smsc_receiver;
+static Octstr *smsbox_by_default;
 
 static long	smsbox_port;
 static int smsbox_port_ssl;
@@ -1066,6 +1067,8 @@ static void smsboxc_run(void *arg)
     smsbox_by_receiver = NULL;
     dict_destroy(smsbox_by_smsc_receiver);
     smsbox_by_smsc_receiver = NULL;
+    octstr_destroy(smsbox_by_default);
+    smsbox_by_default = NULL;
 
     gwlist_remove_producer(flow_threads);
 }
@@ -1112,11 +1115,14 @@ static void wapboxc_run(void *arg)
     gwlist_remove_producer(flow_threads);
 }
 
+#define RELOAD_PANIC(...) \
+    if (reload) { error(__VA_ARGS__); continue; } \
+    else panic(__VA_ARGS__);
 
 /*
  * Populates the corresponding smsbox_by_foobar dictionary hash tables
  */
-static void init_smsbox_routes(Cfg *cfg)
+static void init_smsbox_routes(Cfg *cfg, int reload)
 {
     CfgGroup *grp;
     List *list, *items;
@@ -1132,7 +1138,7 @@ static void init_smsbox_routes(Cfg *cfg)
 
         if ((boxc_id = cfg_get(grp, octstr_imm("smsbox-id"))) == NULL) {
             grp_dump(grp);
-            panic(0,"'smsbox-route' group without valid 'smsbox-id' directive!");
+            RELOAD_PANIC(0,"'smsbox-route' group without valid 'smsbox-id' directive!");
         }
 
         /*
@@ -1158,9 +1164,10 @@ static void init_smsbox_routes(Cfg *cfg)
                 debug("bb.boxc",0,"Adding smsbox routing to id <%s> for smsc id <%s>",
                       octstr_get_cstr(boxc_id), octstr_get_cstr(item));
 
-                if (!dict_put_once(smsbox_by_smsc, item, octstr_duplicate(boxc_id)))
-                    panic(0, "Routing for smsc-id <%s> already exists!",
-                          octstr_get_cstr(item));
+                if (!dict_put_once(smsbox_by_smsc, item, octstr_duplicate(boxc_id))) {
+                    RELOAD_PANIC(0, "Routing for smsc-id <%s> already exists!",
+                                 octstr_get_cstr(item));
+                }
             }
             gwlist_destroy(items, octstr_destroy_item);
             octstr_destroy(smsc_ids);
@@ -1175,9 +1182,10 @@ static void init_smsbox_routes(Cfg *cfg)
                 debug("bb.boxc",0,"Adding smsbox routing to id <%s> for receiver no <%s>",
                       octstr_get_cstr(boxc_id), octstr_get_cstr(item));
 
-                if (!dict_put_once(smsbox_by_receiver, item, octstr_duplicate(boxc_id)))
-                    panic(0, "Routing for receiver no <%s> already exists!",
-                          octstr_get_cstr(item));
+                if (!dict_put_once(smsbox_by_receiver, item, octstr_duplicate(boxc_id))) {
+                    RELOAD_PANIC(0, "Routing for receiver no <%s> already exists!",
+                                 octstr_get_cstr(item));
+                }
             }
             gwlist_destroy(items, octstr_destroy_item);
             octstr_destroy(shortcuts);
@@ -1202,20 +1210,35 @@ static void init_smsbox_routes(Cfg *cfg)
                     /* construct the dict key '<shortcode>:<smsc-id>' */
                     octstr_insert(subitem, item, 0);
                     octstr_insert_char(subitem, octstr_len(item), ':');
-                    if (!dict_put_once(smsbox_by_smsc_receiver, subitem, octstr_duplicate(boxc_id)))
-                        panic(0, "Routing for receiver:smsc <%s> already exists!",
-                              octstr_get_cstr(subitem));
+                    if (!dict_put_once(smsbox_by_smsc_receiver, subitem, octstr_duplicate(boxc_id))) {
+                        RELOAD_PANIC(0, "Routing for receiver:smsc <%s> already exists!",
+                                     octstr_get_cstr(subitem));
+                    }
                 }
                 gwlist_destroy(subitems, octstr_destroy_item);
             }
             gwlist_destroy(items, octstr_destroy_item);
             octstr_destroy(shortcuts);
+            octstr_destroy(smsc_ids);
         }
+        else {  /* !smscids && !shortcuts */
+            if (!smsbox_by_default) {
+                debug("bb.boxc",0,"Adding smsbox default routing to id <%s>",
+                       octstr_get_cstr(boxc_id));
+                smsbox_by_default = octstr_duplicate(boxc_id);
+            } else {
+                RELOAD_PANIC(0, "Default smsbox routing to id <%s> already exists!",
+                             octstr_get_cstr(smsbox_by_default));
+            }
+        }
+
         octstr_destroy(boxc_id);
     }
 
     gwlist_destroy(list, NULL);
 }
+
+#undef RELOAD_PANIC
 
 
 /*-------------------------------------------------------------
@@ -1270,9 +1293,10 @@ int smsbox_start(Cfg *cfg)
     smsbox_by_smsc = dict_create(30, (void(*)(void *)) octstr_destroy);
     smsbox_by_receiver = dict_create(50, (void(*)(void *)) octstr_destroy);
     smsbox_by_smsc_receiver = dict_create(50, (void(*)(void *)) octstr_destroy);
+    smsbox_by_default = NULL;
 
     /* load the defined smsbox routing rules */
-    init_smsbox_routes(cfg);
+    init_smsbox_routes(cfg, 0);
 
     gwlist_add_producer(outgoing_sms);
     gwlist_add_producer(smsbox_list);
@@ -1293,7 +1317,17 @@ int smsbox_restart(Cfg *cfg)
 {
     if (!smsbox_running) return -1;
 
-    /* send new config to clients */
+    gw_rwlock_wrlock(smsbox_list_rwlock);
+    dict_destroy(smsbox_by_smsc);
+    dict_destroy(smsbox_by_receiver);
+    dict_destroy(smsbox_by_smsc_receiver);
+    smsbox_by_smsc = dict_create(30, (void(*)(void *)) octstr_destroy);
+    smsbox_by_receiver = dict_create(50, (void(*)(void *)) octstr_destroy);
+    smsbox_by_smsc_receiver = dict_create(50, (void(*)(void *)) octstr_destroy);
+    octstr_destroy(smsbox_by_default);
+    smsbox_by_default = NULL;
+    init_smsbox_routes(cfg, 1);
+    gw_rwlock_unlock(smsbox_list_rwlock);
 
     return 0;
 }
@@ -1320,12 +1354,16 @@ int wapbox_start(Cfg *cfg)
     cfg_get_bool(&wapbox_port_ssl, grp, octstr_imm("wapbox-port-ssl"));
 #endif /* HAVE_LIBSSL */
 
-    box_allow_ip = cfg_get(grp, octstr_imm("box-allow-ip"));
-    if (box_allow_ip == NULL)
-    	box_allow_ip = octstr_create("");
-    box_deny_ip = cfg_get(grp, octstr_imm("box-deny-ip"));
-    if (box_deny_ip == NULL)
-    	box_deny_ip = octstr_create("");
+    if (box_allow_ip == NULL) {
+        box_allow_ip = cfg_get(grp, octstr_imm("box-allow-ip"));
+        if (box_allow_ip == NULL)
+     	    box_allow_ip = octstr_create("");
+    }
+    if (box_deny_ip == NULL) {
+        box_deny_ip = cfg_get(grp, octstr_imm("box-deny-ip"));
+        if (box_deny_ip == NULL)
+    	    box_deny_ip = octstr_create("");
+    }
     if (box_allow_ip != NULL && box_deny_ip == NULL)
 	    info(0, "Box connection allowed IPs defined without any denied...");
 
@@ -1506,7 +1544,7 @@ void boxc_cleanup(void)
  *
  * BEWARE: All logic inside here should be fast, hence speed processing
  * optimized, because every single MO message passes this function and we
- * have to ensure that no unncessary overhead is done.
+ * have to ensure that no unnecessary overhead is done.
  */
 int route_incoming_to_boxc(Msg *msg)
 {
@@ -1557,6 +1595,8 @@ int route_incoming_to_boxc(Msg *msg)
             boxc_id = r;
         else if (s)
             boxc_id = s;
+        else if (smsbox_by_default)
+            boxc_id = smsbox_by_default;
     }
 
     /* We have a specific smsbox-id to use */

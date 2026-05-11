@@ -70,6 +70,8 @@
 
 #ifdef HAVE_REDIS
 
+#define REDIS_DEFAULT_PORT  6379
+
 /*
  * Some SMSCs (such as the Logica SMPP simulator when bound multiple times
  * under high load) erroneously return duplicate message IDs. Before writing
@@ -178,6 +180,8 @@ static void dlr_redis_add(struct dlr_entry *entry)
     gwlist_append(binds, os);
     gwlist_append(binds, fields->field_boxc);
     gwlist_append(binds, entry->boxc_id);
+    gwlist_append(binds, fields->field_status);
+    gwlist_append(binds, octstr_imm("0"));
 
     res = dbpool_conn_update(pconn, sql, binds);
 
@@ -373,22 +377,24 @@ static void dlr_redis_update(const Octstr *smsc, const Octstr *ts, const Octstr 
 
     os_status = octstr_format("%d", status);
 
-    key = octstr_format((dst ? "%S:?:?:?" : "%S:?:?"), fields->table);
+    /* If the destination address is not NULL, then
+     * it has been shortened by the abstractive layer. */
+    if (dst)
+        key = octstr_format("%S:%S:%S:%S", fields->table,
+                (Octstr*) smsc, (Octstr*) ts, (Octstr*) dst);
+    else
+        key = octstr_format("%S:%S:%S", fields->table,
+                (Octstr*) smsc, (Octstr*) ts);
 
-    sql = octstr_format("HSET %S %S ?", key, fields->field_status);
-    gwlist_append(binds, (Octstr*)smsc);
-    gwlist_append(binds, (Octstr*)ts);
-    if (dst != NULL)
-        gwlist_append(binds, (Octstr*)dst);
+    sql = octstr_create("");
+    gwlist_append(binds, octstr_imm("HMSET"));
+    gwlist_append(binds, key);
+    gwlist_append(binds, fields->field_status);
     gwlist_append(binds, os_status);
 
     if ((res = dbpool_conn_update(pconn, sql, binds)) == -1) {
         error(0, "DLR: REDIS: Error while updating dlr entry for %s",
               octstr_get_cstr(key));
-    }
-    else if (!res) {
-        warning(0, "DLR: REDIS: No dlr found to update for %s",
-                octstr_get_cstr(key));
     }
 
     dbpool_conn_produce(pconn);
@@ -527,8 +533,9 @@ found:
 
     if (!(redis_host = cfg_get(grp, octstr_imm("host"))))
    	    panic(0, "DLR: Redis: directive 'host' is not specified!");
-    if (cfg_get_integer(&redis_port, grp, octstr_imm("port")) == -1)
-   	    panic(0, "DLR: Redis: directive 'port' is not specified!");
+    if (cfg_get_integer(&redis_port, grp, octstr_imm("port")) == -1) {
+        redis_port = REDIS_DEFAULT_PORT;
+    }
     redis_pass = cfg_get(grp, octstr_imm("password"));
     cfg_get_integer(&redis_database, grp, octstr_imm("database"));
     cfg_get_integer(&redis_idle_timeout, grp, octstr_imm("idle-timeout"));

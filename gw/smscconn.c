@@ -66,7 +66,7 @@
 #include <time.h>
 
 #include "gwlib/gwlib.h"
-#include "gwlib/regex.h"
+#include "gwlib/gw-regex.h"
 #include "smscconn.h"
 #include "smscconn_p.h"
 #include "bb_smscconn_cb.h"
@@ -143,6 +143,54 @@ static void init_reroute(SMSCConn *conn, CfgGroup *grp)
         octstr_destroy(rule);
         gwlist_destroy(routes, octstr_destroy_item);
     }
+
+    if ((rule = cfg_get(grp, octstr_imm("reroute-receiver-regex"))) != NULL) {
+        List *routes;
+
+        /* create list with regex patterns and smsc-id */
+        conn->reroute_by_receiver_regex = gwlist_create();
+
+        routes = octstr_split(rule, octstr_imm(";"));
+        for (i = 0; i < gwlist_len(routes); i++) {
+            Octstr *item = gwlist_get(routes, i);
+            Octstr *smsc, *receiver;
+            List *receivers;
+            regex_t *re;
+            pattern_route *r;
+
+            /* first word is the smsc-id, all other are receiver regex */
+            receivers = octstr_split(item, octstr_imm(","));
+            smsc = gwlist_extract_first(receivers);
+            if (smsc)
+                octstr_strip_blanks(smsc);
+
+            while ((receiver = gwlist_extract_first(receivers))) {
+                octstr_strip_blanks(receiver);
+
+                if ((re = gw_regex_comp(receiver, REG_EXTENDED)) == NULL) {
+                    grp_dump(grp);
+                    error(0, "Could not compile regex pattern '%s', skipping.", octstr_get_cstr(receiver));
+                    octstr_destroy(receiver);
+                    continue;
+                }
+
+                r = gw_malloc(sizeof(pattern_route));
+                r->id = octstr_duplicate(smsc);
+                r->re = re;
+
+                debug("smscconn",0,"Adding internal routing for smsc id <%s>: "
+                          "receiver-regex <%s> to smsc id <%s>",
+                          octstr_get_cstr(conn->id), octstr_get_cstr(receiver),
+                          octstr_get_cstr(smsc));
+                gwlist_append(conn->reroute_by_receiver_regex, r);
+                octstr_destroy(receiver);
+            }
+            octstr_destroy(smsc);
+            gwlist_destroy(receivers, octstr_destroy_item);
+        }
+        octstr_destroy(rule);
+        gwlist_destroy(routes, octstr_destroy_item);
+    }
 }
 
 
@@ -192,24 +240,25 @@ SMSCConn *smscconn_create(CfgGroup *grp, int start_as_stopped)
     /* checksum of the connection related part, without routing
      * and without instance multiplier */
     conn->chksum_conn = cfg_get_group_checksum(grp,
-		    OCTSTR(denied-smsc-id),
-		    OCTSTR(allowed-smsc-id),
-		    OCTSTR(preferred-smsc-id),
-		    OCTSTR(allowed-prefix),
-		    OCTSTR(denied-prefix),
-		    OCTSTR(preferred-prefix),
-		    OCTSTR(unified-prefix),
-		    OCTSTR(reroute),
-		    OCTSTR(reroute-smsc-id),
-		    OCTSTR(reroute-receiver),
-		    OCTSTR(reroute-dlr),
-		    OCTSTR(allowed-smsc-id-regex),
-		    OCTSTR(denied-smsc-id-regex),
-		    OCTSTR(preferred-smsc-id-regex),
-		    OCTSTR(allowed-prefix-regex),
-		    OCTSTR(denied-prefix-regex),
-		    OCTSTR(preferred-prefix-regex),
-		    NULL
+            OCTSTR(denied-smsc-id),
+            OCTSTR(allowed-smsc-id),
+            OCTSTR(preferred-smsc-id),
+            OCTSTR(allowed-prefix),
+            OCTSTR(denied-prefix),
+            OCTSTR(preferred-prefix),
+            OCTSTR(unified-prefix),
+            OCTSTR(reroute),
+            OCTSTR(reroute-smsc-id),
+            OCTSTR(reroute-receiver),
+            OCTSTR(reroute-receiver-regex),
+            OCTSTR(reroute-dlr),
+            OCTSTR(allowed-smsc-id-regex),
+            OCTSTR(denied-smsc-id-regex),
+            OCTSTR(preferred-smsc-id-regex),
+            OCTSTR(allowed-prefix-regex),
+            OCTSTR(denied-prefix-regex),
+            OCTSTR(preferred-prefix-regex),
+            NULL
     );
 
     conn->received = counter_create();
@@ -403,6 +452,15 @@ void smscconn_shutdown(SMSCConn *conn, int finish_sending)
 }
 
 
+static void pattern_route_destroy(void *arg)
+{
+    pattern_route *r = arg;
+    gw_regex_destroy(r->re);
+    octstr_destroy(r->id);
+    gw_free(r);
+}
+
+
 int smscconn_destroy(SMSCConn *conn)
 {
     if (conn == NULL)
@@ -445,6 +503,7 @@ int smscconn_destroy(SMSCConn *conn)
 
     octstr_destroy(conn->reroute_to_smsc);
     dict_destroy(conn->reroute_by_receiver);
+    gwlist_destroy(conn->reroute_by_receiver_regex, pattern_route_destroy);
 
     mutex_unlock(conn->flow_mutex);
     mutex_destroy(conn->flow_mutex);
@@ -744,6 +803,7 @@ void smscconn_reconfig(SMSCConn *conn, CfgGroup *grp)
 
     octstr_destroy(conn->reroute_to_smsc);
     dict_destroy(conn->reroute_by_receiver);
+    gwlist_destroy(conn->reroute_by_receiver_regex, pattern_route_destroy);
     init_reroute(conn, grp);
 
     /*
