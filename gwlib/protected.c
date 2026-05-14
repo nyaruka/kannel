@@ -200,6 +200,10 @@ int gw_gethostbyname(struct hostent *ent, const char *name, char **buff)
     static char *empty_aliases[1] = { NULL };
 
     *buff = NULL;
+    if (ent == NULL || name == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
 
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_INET;
@@ -208,6 +212,8 @@ int gw_gethostbyname(struct hostent *ent, const char *name, char **buff)
 
     rc = getaddrinfo(name, NULL, &hints, &res);
     if (rc != 0) {
+        if (rc != EAI_SYSTEM)
+            errno = ENOENT;
         error(0, "getaddrinfo(%s) failed: %s", name, gai_strerror(rc));
         return -1;
     }
@@ -220,6 +226,7 @@ int gw_gethostbyname(struct hostent *ent, const char *name, char **buff)
             n++;
     }
     if (n == 0) {
+        errno = EADDRNOTAVAIL;
         error(0, "getaddrinfo(%s): no IPv4 addresses returned", name);
         freeaddrinfo(res);
         return -1;
@@ -270,4 +277,3 @@ int gw_gethostbyname(struct hostent *ent, const char *name, char **buff)
     freeaddrinfo(res);
     return 0;
 }
-

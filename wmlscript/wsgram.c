@@ -348,6 +348,7 @@ int ws_yy_parse (WsCompiler* compiler);
    report the internal parser errors.  All other errors are reported
    by using the `wserror.h' functions. */
 extern void yyerror(YYLTYPE* locp, WsCompiler* compiler, const char* msg);
+extern int yylex(YYSTYPE *yylval, YYLTYPE *yylloc, WsCompiler *compiler);
 
 #if WS_DEBUG
 /* Just for debugging purposes. */

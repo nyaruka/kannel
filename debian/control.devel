@@ -2,8 +2,8 @@ Source: kannel-devel
 Section: net
 Priority: optional
 Maintainer: Bruno Rodrigues <bruno.rodrigues@litux.org>
-Build-Depends: debhelper (>> 4.0.0), libxml2-dev, libssl-dev, openssl, libmysqlclient10-dev, libpam0g-dev
-Build-Depends-Indep: debhelper (>> 4.0.0), docbook-dsssl, jadetex, transfig, imagemagick, gs
+Build-Depends: debhelper-compat (= 13), autoconf, automake, libtool, pkg-config, gettext, bison, flex, libxml2-dev, libssl-dev, openssl, default-libmysqlclient-dev, libpam0g-dev, zlib1g-dev
+Build-Depends-Indep: docbook-dsssl, openjade, texlive-formats-extra, fig2dev, imagemagick, ghostscript
 Standards-Version: 3.5.9
 
 Package: kannel-devel
