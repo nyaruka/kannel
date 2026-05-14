@@ -249,11 +249,11 @@ AC_CHECK_FUNCS(gettimeofday select socket strdup getopt_long localtime_r gmtime_
 AC_CHECK_FUNC(getopt, [], [AC_LIBOBJ([utils/attgetopt])])
 AC_CHECK_FUNC(dlopen, [], AC_CHECK_LIB(dl, dlopen, LDFLAGS="$LDFLAGS -ldl"))
 
-dnl Check if we have reentrant gethostbyname and which one
-AC_CHECK_FUNC(gethostbyname_r, [ AC_FUNC_WHICH_GETHOSTBYNAME_R ], [
-  AC_CHECK_FUNC(gethostbyname,[], [
-    AC_MSG_ERROR([Couldnot find gethostbyname_r nor gethostbyname functions])])]
-)
+dnl Check that we have the modern, thread-safe getaddrinfo(3) (POSIX since
+dnl IEEE Std 1003.1-2001). Used by gw_gethostbyname(); replaces the legacy
+dnl gethostbyname/gethostbyname_r APIs that are deprecated on current glibc.
+AC_CHECK_FUNC(getaddrinfo, [], [
+    AC_MSG_ERROR([getaddrinfo() is required but was not found])])
 
 dnl Extra feature checks
 

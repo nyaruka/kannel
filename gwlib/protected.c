@@ -72,14 +72,12 @@
 #undef localtime
 #undef gmtime
 #undef rand
-#undef gethostbyname
 #undef mktime
 #undef strftime
 
 
 enum {
     RAND,
-    GETHOSTBYNAME,
     GWTIME,
     NUM_LOCKS
 };
@@ -181,156 +179,95 @@ int gw_rand(void)
     return ret;
 }
 
-#if HAVE_FUNC_GETHOSTBYNAME_R_6
-/* linux version */
-int gw_gethostbyname(struct hostent *ent, const char *name, char **buff)
-{
-    struct hostent *tmphp, hp;
-    int herr, res;
-    size_t bufflen;
-
-    tmphp = NULL; /* for compiler please */
-
-    bufflen = 1024;
-    *buff = (char*) gw_malloc(bufflen);
-    while ((res=gethostbyname_r(name, &hp,*buff, bufflen, &tmphp, &herr)) == ERANGE) {
-        /* enlarge the buffer */
-	bufflen *= 2;
-	*buff = (char*) gw_realloc(*buff, bufflen);
-    }
-
-    if (res != 0 || tmphp == NULL) {
-        error(herr, "Error while gw_gethostbyname occurs.");
-        gw_free(*buff);
-        *buff = NULL;
-        res = -1;
-    }
-    else {
-        *ent = hp;
-    }
-
-    return res;
-}
-#elif HAVE_FUNC_GETHOSTBYNAME_R_5
-/* solaris */
-int gw_gethostbyname(struct hostent *ent, const char *name, char **buff)
-{
-    int herr = 0;
-    size_t bufflen = 1024;
-    int res = 0;
-    struct hostent *tmphp = NULL;
-
-    *buff = gw_malloc(bufflen);
-    while ((tmphp = gethostbyname_r(name, ent, *buff, bufflen, &herr)) == NULL && (errno == ERANGE)) {
-        /* Enlarge the buffer. */
-        bufflen *= 2;
-        *buff = (char *) gw_realloc(*buff, bufflen);
-    }
-
-    if (tmphp == NULL) {
-        error(herr, "Error while gw_gethostbyname occurs.");
-        gw_free(*buff);
-        *buff = NULL;
-        res = -1;
-    }
-
-    return res;
-}
-/* not yet implemented, no machine for testing (alex) */
-/* #elif HAVE_FUNC_GETHOSTBYNAME_R_3 */
-#else
 /*
- * Hmm, we don't have a gethostbyname_r(), this is bad...
- * Here we must perform a "deep-copy" of a hostent struct returned
- * from gethostbyname.
- * Note: Bellow code is based on parts from cURL.
+ * Resolve a hostname to a list of IPv4 addresses using the modern,
+ * thread-safe getaddrinfo(3) API. The legacy gethostbyname/gethostbyname_r
+ * functions are deprecated on current glibc and may emit warnings (or
+ * errors with -Werror) on recent toolchains.
+ *
+ * To keep the existing call sites unchanged we still hand back a
+ * struct hostent populated with IPv4 addresses. A single buffer is
+ * allocated in *buff that owns the canonical name string, the
+ * h_addr_list pointer array and the in_addr slots it points into;
+ * the caller is responsible for gw_free(*buff) when done.
  */
 int gw_gethostbyname(struct hostent *ent, const char *name, char **buff)
 {
-    int len, i;
-    struct hostent *p;
-    /* Allocate enough memory to hold the full name information structs and
-     * everything. OSF1 is known to require at least 8872 bytes. The buffer
-     * required for storing all possible aliases and IP numbers is according to
-     * Stevens' Unix Network Programming 2nd editor, p. 304: 8192 bytes!
-     */
-    size_t bufflen = 9000;
-    char *bufptr, *str;
+    struct addrinfo hints, *res, *ai;
+    int rc, n, i;
+    size_t name_len, addrs_off, addrs_size, ptrs_size, total;
+    char *bufptr;
+    static char *empty_aliases[1] = { NULL };
 
-    lock(GETHOSTBYNAME);
+    *buff = NULL;
 
-    p = gethostbyname(name);
-    if (p == NULL) {
-        unlock(GETHOSTBYNAME);
-        *buff = NULL;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_CANONNAME;
+
+    rc = getaddrinfo(name, NULL, &hints, &res);
+    if (rc != 0) {
+        error(0, "getaddrinfo(%s) failed: %s", name, gai_strerror(rc));
         return -1;
     }
 
-    *ent = *p;
-    /* alloc mem */
-    bufptr = *buff = gw_malloc(bufflen);
-    ent->h_name = bufptr;
-    /* copy h_name into buff */
-    len = strlen(p->h_name) + 1;
-    strncpy(bufptr, p->h_name, len);
-    bufptr += len;
-
-  /* we align on even 64bit boundaries for safety */
-#define MEMALIGN(x) ((x)+(8-(((unsigned long)(x))&0x7)))
-
-    /* This must be aligned properly to work on many CPU architectures! */
-    bufptr = MEMALIGN(bufptr);
-
-    ent->h_aliases = (char**)bufptr;
-
-    /* Figure out how many aliases there are */
-    for (i = 0; p->h_aliases[i] != NULL; ++i)
-        ;
-
-    /* Reserve room for the array */
-    bufptr += (i + 1) * sizeof(char*);
-
-    /* Clone all known aliases */
-    for(i = 0; (str = p->h_aliases[i]); i++) {
-        len = strlen(str) + 1;
-        strncpy(bufptr, str, len);
-        ent->h_aliases[i] = bufptr;
-        bufptr += len;
+    /* Count IPv4 addresses returned. */
+    n = 0;
+    for (ai = res; ai != NULL; ai = ai->ai_next) {
+        if (ai->ai_family == AF_INET && ai->ai_addr != NULL &&
+            ai->ai_addrlen >= sizeof(struct sockaddr_in))
+            n++;
     }
-    /* Terminate the alias list with a NULL */
-    ent->h_aliases[i] = NULL;
-
-    ent->h_addrtype = p->h_addrtype;
-    ent->h_length = p->h_length;
-
-    /* align it for (at least) 32bit accesses */
-    bufptr = MEMALIGN(bufptr);
-
-    ent->h_addr_list = (char**)bufptr;
-
-    /* Figure out how many addresses there are */
-    for (i = 0; p->h_addr_list[i] != NULL; ++i)
-        ;
-
-    /* Reserve room for the array */
-    bufptr += (i + 1) * sizeof(char*);
-
-    i = 0;
-    len = p->h_length;
-    str = p->h_addr_list[i];
-    while (str != NULL) {
-        memcpy(bufptr, str, len);
-        ent->h_addr_list[i] = bufptr;
-        bufptr += len;
-        str = p->h_addr_list[++i];
+    if (n == 0) {
+        error(0, "getaddrinfo(%s): no IPv4 addresses returned", name);
+        freeaddrinfo(res);
+        return -1;
     }
-    ent->h_addr_list[i] = NULL;
 
-#undef MEMALIGN
+    /*
+     * Single-buffer layout:
+     *   [ canonical name string, NUL-terminated ]
+     *   [ padding to pointer alignment ]
+     *   [ (n+1) * (char *)        -> h_addr_list ]
+     *   [ n * struct in_addr      -> referenced by h_addr_list ]
+     */
+    {
+        const char *canon = (res->ai_canonname != NULL) ? res->ai_canonname : name;
+        name_len = strlen(canon) + 1;
+        /* Align after name to sizeof(void *). */
+        addrs_off = (name_len + sizeof(void *) - 1) & ~(sizeof(void *) - 1);
+        ptrs_size = (n + 1) * sizeof(char *);
+        addrs_size = n * sizeof(struct in_addr);
+        total = addrs_off + ptrs_size + addrs_size;
 
-    unlock(GETHOSTBYNAME);
+        bufptr = gw_malloc(total);
+        *buff = bufptr;
 
+        memcpy(bufptr, canon, name_len);
+        ent->h_name = bufptr;
+    }
+
+    ent->h_aliases = empty_aliases;
+    ent->h_addrtype = AF_INET;
+    ent->h_length = sizeof(struct in_addr);
+    ent->h_addr_list = (char **)(bufptr + addrs_off);
+
+    {
+        struct in_addr *addrs = (struct in_addr *)((char *)ent->h_addr_list + ptrs_size);
+        i = 0;
+        for (ai = res; ai != NULL && i < n; ai = ai->ai_next) {
+            if (ai->ai_family != AF_INET || ai->ai_addr == NULL ||
+                ai->ai_addrlen < sizeof(struct sockaddr_in))
+                continue;
+            addrs[i] = ((struct sockaddr_in *)ai->ai_addr)->sin_addr;
+            ent->h_addr_list[i] = (char *)&addrs[i];
+            i++;
+        }
+        ent->h_addr_list[i] = NULL;
+    }
+
+    freeaddrinfo(res);
     return 0;
 }
-#endif
 
