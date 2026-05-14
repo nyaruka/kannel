@@ -269,9 +269,6 @@ typedef struct WsCompilerRec WsCompiler;
 
 /********************* Lexer and parser *********************************/
 
-/* The lexer. */
-extern int yylex();
-
 /* Register the lexer allocated block `ptr' to the compiler's list of
    active blocks. */
 WsBool ws_lexer_register_block(WsCompiler *compiler, void *ptr);

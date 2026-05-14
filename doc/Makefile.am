@@ -130,7 +130,7 @@ figs: $(figs)
 ps: $(ps)
 pp: $(pres)
 
-install: install-docs
+install: install-$(DOCSTARGET)
 install-docs: $(SUBDIRS)
 	$(INSTALL) -d $(DESTDIR)$(docdir)/examples
 	$(INSTALL_DATA) examples/*.conf $(DESTDIR)$(docdir)/examples
@@ -142,6 +142,7 @@ install-docs: $(SUBDIRS)
 		$(INSTALL_DATA) $$docfile/$$docfile.pdf $(DESTDIR)$(docdir)/$$docfile ; \
 		$(INSTALL_DATA) $$docfile/*.png $(DESTDIR)$(docdir)/$$docfile ; \
 	done
+install-no-docs:
 
 clean: $(SUBDIRS)
 	rm -f $(figs) $(ps) $(docs)

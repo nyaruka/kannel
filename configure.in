@@ -175,10 +175,10 @@ AC_C_INLINE
 dnl Check for how to do large files
 
 AC_SYS_LARGEFILE(CFLAGS)
-if test "${ac_cv_sys_file_offset_bits}" != no ; then
+if test "x${ac_cv_sys_file_offset_bits}" != "xno" && test "x${ac_cv_sys_file_offset_bits}" != "x" ; then
     CFLAGS="$CFLAGS -D_FILE_OFFSET_BITS=${ac_cv_sys_file_offset_bits}"
 fi
-if test "${ac_cv_sys_large_files}" != no ; then
+if test "x${ac_cv_sys_large_files}" != "xno" && test "x${ac_cv_sys_large_files}" != "x" ; then
     CFLAGS="$CFLAGS -D_LARGE_FILES=${ac_cv_sys_large_files}"
 fi
 
@@ -249,11 +249,11 @@ AC_CHECK_FUNCS(gettimeofday select socket strdup getopt_long localtime_r gmtime_
 AC_CHECK_FUNC(getopt, [], [AC_LIBOBJ([utils/attgetopt])])
 AC_CHECK_FUNC(dlopen, [], AC_CHECK_LIB(dl, dlopen, LDFLAGS="$LDFLAGS -ldl"))
 
-dnl Check if we have reentrant gethostbyname and which one
-AC_CHECK_FUNC(gethostbyname_r, [ AC_FUNC_WHICH_GETHOSTBYNAME_R ], [
-  AC_CHECK_FUNC(gethostbyname,[], [
-    AC_MSG_ERROR([Couldnot find gethostbyname_r nor gethostbyname functions])])]
-)
+dnl Check that we have the modern, thread-safe getaddrinfo(3) (POSIX since
+dnl IEEE Std 1003.1-2001). Used by gw_gethostbyname(); replaces the legacy
+dnl gethostbyname/gethostbyname_r APIs that are deprecated on current glibc.
+AC_CHECK_FUNC(getaddrinfo, [], [
+    AC_MSG_ERROR([getaddrinfo() is required but was not found])])
 
 dnl Extra feature checks
 
@@ -823,42 +823,62 @@ AC_ARG_ENABLE(ssl,
   ssl=yes
 ])
 
+have_openssl_pkgconfig=no
 if test "$ssl" = "yes" ; then
   dnl test only if --with-ssl has not been used
   if test "x$ssllib" = "x" && test "x$sslinc" = "x"; then
-    for loc in /usr/lib /usr/lib64 /usr/local/ssl/lib /usr/local/openssl/lib; do
-      if test -f "$loc/libssl.a" -o -f "$loc/libssl.so" -o -f "$loc/libssl.dylib" ; then
-        ssllib="$loc"
-      fi
-    done
-    if test "x$sslib" = "x" && test -n "$GCC"; then
-      for lib in libssl.a libssl.so libssl.dylib; do
-        name=`$CC -print-file-name=$lib`
-        if test -f "$name"; then
-          ssllib=`dirname $name`
+    if test -n "$PKG_CONFIG" && test "$PKG_CONFIG" != "no" && `$PKG_CONFIG --exists openssl`; then
+      OPENSSL_CFLAGS=`$PKG_CONFIG --cflags openssl`
+      OPENSSL_LIBS=`$PKG_CONFIG --libs openssl`
+      openssl_version=`$PKG_CONFIG --modversion openssl`
+      openssl_ver=`echo $openssl_version | sed 's/[[a-zA-Z]]//g'`
+      CFLAGS="$CFLAGS $OPENSSL_CFLAGS"
+      LIBS="$LIBS $OPENSSL_LIBS"
+      have_openssl_pkgconfig=yes
+      AC_MSG_RESULT([using pkg-config openssl $openssl_version])
+    else
+      for loc in /usr/lib /usr/lib64 /usr/local/ssl/lib /usr/local/openssl/lib; do
+        if test -f "$loc/libssl.a" -o -f "$loc/libssl.so" -o -f "$loc/libssl.dylib" ; then
+          ssllib="$loc"
         fi
       done
-    fi
-    for loc in /usr/include/ssl /usr/include/openssl /usr/local/ssl/include \
-               /usr/local/openssl/include; do
-      if test -d "$loc"; then
-        sslinc="$loc"
+      if test "x$ssllib" = "x" && test -n "$GCC"; then
+        for lib in libssl.a libssl.so libssl.dylib; do
+          name=`$CC -print-file-name=$lib`
+          if test -f "$name"; then
+            ssllib=`dirname $name`
+          fi
+        done
       fi
-    done
+      for loc in /usr/include /usr/include/ssl /usr/include/openssl /usr/local/ssl/include \
+                 /usr/local/openssl/include; do
+        if test -d "$loc/openssl"; then
+          sslinc="$loc"
+        fi
+      done
+      AC_MSG_RESULT(trying $ssllib $sslinc)
+    fi
+  else
+    AC_MSG_RESULT(trying $ssllib $sslinc)
   fi
-  AC_MSG_RESULT(trying $ssllib $sslinc)
 fi
 
 
 dnl Implement the SSL library checking routine.
 dnl This will define HAVE_LIBSSL in gw-config.h
 
-if test "x$ssllib" != "x" && test "x$sslinc" != "x"; then
-  CFLAGS="$CFLAGS -I$sslinc"
-  LIBS="$LIBS -L$ssllib"
+if test "$ssl" = "yes" && { test "$have_openssl_pkgconfig" = "yes" || { test "x$ssllib" != "x" && test "x$sslinc" != "x"; }; }; then
+  if test "$have_openssl_pkgconfig" != "yes"; then
+    CFLAGS="$CFLAGS -I$sslinc"
+    LIBS="$LIBS -L$ssllib"
+  fi
 
-  AC_PATH_PROG(OPENSSL, openssl, no)
-  if test "$OPENSSL" != "no"; then
+  if test "x$openssl_version" = "x"; then
+    AC_PATH_PROG(OPENSSL, openssl, no)
+  else
+    OPENSSL=no
+  fi
+  if test "x$openssl_version" = "x" && test "$OPENSSL" != "no"; then
     AC_MSG_CHECKING([openssl version])
     openssl_version=`$OPENSSL version | awk '{print $2}'`
     openssl_ver=`echo $openssl_version | sed 's/[[a-zA-Z]]//g'`
@@ -867,9 +887,11 @@ if test "x$ssllib" != "x" && test "x$sslinc" != "x"; then
   AC_CHECK_VERSION($openssl_ver, "1.1.0", 
   [ CRYPTO_CHECK=HMAC_Update
     SSL_CHECK=OPENSSL_init_ssl
+    OPENSSL_BUILTIN_THREADS=yes
   ],[
     CRYPTO_CHECK=CRYPTO_lock
     SSL_CHECK=SSL_library_init
+    OPENSSL_BUILTIN_THREADS=no
   ])
   AC_CHECK_LIB(crypto, $CRYPTO_CHECK,
   [ LIBS="$LIBS -lcrypto"
@@ -879,37 +901,45 @@ if test "x$ssllib" != "x" && test "x$sslinc" != "x"; then
                        openssl/pem.h openssl/ssl.h openssl/err.h \
                        openssl/hmac.h)
       AC_MSG_CHECKING(whether the OpenSSL library is multithread-enabled)
-      AC_TRY_RUN([
-        #define OPENSSL_THREAD_DEFINES
-        #include <openssl/opensslconf.h>
-        int main(void) {
-        #if defined(THREADS)
-          exit(0);
-        #elif defined(OPENSSL_THREADS)
-          exit(0);
-        #else
-          exit(1);
-        #endif
-        }
-      ], [
+      if test "$OPENSSL_BUILTIN_THREADS" = "yes"; then
         AC_MSG_RESULT(yes)
-          AC_DEFINE(HAVE_LIBSSL, 1, [Do we have libssl])
+        AC_DEFINE(HAVE_LIBSSL, 1, [Do we have libssl])
         LIBS="$LIBS -lssl"
         AC_MSG_CHECKING([whether to compile with SSL support])
         AC_MSG_RESULT(yes)
-      ], [
-        AC_ARG_ENABLE(ssl-thread-test,
-        [  --disable-ssl-thread-test  disable the multithread test for the OpenSSL library
-                          this will force to continue even if the test fails],
-        [ if test "$enableval" = no ; then
-            AC_MSG_RESULT([no, continue forced])
-          fi
+      else
+        AC_TRY_RUN([
+          #define OPENSSL_THREAD_DEFINES
+          #include <openssl/opensslconf.h>
+          int main(void) {
+          #if defined(THREADS)
+            exit(0);
+          #elif defined(OPENSSL_THREADS)
+            exit(0);
+          #else
+            exit(1);
+          #endif
+          }
         ], [
-          AC_MSG_RESULT(no)
-          AC_MSG_ERROR(Either get a multithread-enabled SSL or configure with --disable-ssl)
-        ])
-      ], echo "Cross-compiling; make sure your SSL library is multithread-enabled"
-      )
+          AC_MSG_RESULT(yes)
+          AC_DEFINE(HAVE_LIBSSL, 1, [Do we have libssl])
+          LIBS="$LIBS -lssl"
+          AC_MSG_CHECKING([whether to compile with SSL support])
+          AC_MSG_RESULT(yes)
+        ], [
+          AC_ARG_ENABLE(ssl-thread-test,
+          [  --disable-ssl-thread-test  disable the multithread test for the OpenSSL library
+                            this will force to continue even if the test fails],
+          [ if test "$enableval" = no ; then
+              AC_MSG_RESULT([no, continue forced])
+            fi
+          ], [
+            AC_MSG_RESULT(no)
+            AC_MSG_ERROR(Either get a multithread-enabled SSL or configure with --disable-ssl)
+          ])
+        ], echo "Cross-compiling; make sure your SSL library is multithread-enabled"
+        )
+      fi
     ])
   ])
 fi
